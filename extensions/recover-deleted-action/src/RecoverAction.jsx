@@ -50,9 +50,11 @@ function RecoverDeletedAction() {
     setRecovering((prev) => ({ ...prev, [backupItemId]: true }));
 
     try {
+      // No Content-Type header on purpose: application/json would trigger a
+      // CORS preflight (OPTIONS) that the Remix action doesn't answer. A plain
+      // body is a "simple" request; request.json() still parses it server-side.
       const response = await fetch("/api/restore-product", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ backupItemId }),
       });
 
