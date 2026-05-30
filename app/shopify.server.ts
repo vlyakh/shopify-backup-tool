@@ -46,6 +46,32 @@ const shopify = shopifyApp({
     unstable_newEmbeddedAuthStrategy: true,
     expiringOfflineAccessTokens: true,
   },
+  hooks: {
+    afterAuth: async ({ session, admin }) => {
+      // Ensure the store exists and enable real-time change tracking so
+      // product/collection edits are recorded to the ChangeLog.
+      const store = await prisma.store.upsert({
+        where: { id: session.shop },
+        create: { id: session.shop, webhooksEnabled: true },
+        update: { webhooksEnabled: true },
+      });
+
+      // On first install, kick off an initial backup so there's an immediate
+      // baseline to restore against. Fire-and-forget keeps the OAuth callback fast.
+      const backupCount = await prisma.backup.count({
+        where: { storeId: session.shop },
+      });
+      if (backupCount === 0) {
+        const { runBackup } = await import("./services/backup.server");
+        runBackup(admin, session.shop, "MANUAL", store.plan).catch((err) => {
+          console.error(
+            `[afterAuth] initial backup failed for ${session.shop}:`,
+            err,
+          );
+        });
+      }
+    },
+  },
   ...(process.env.SHOP_CUSTOM_DOMAIN
     ? { customShopDomains: [process.env.SHOP_CUSTOM_DOMAIN] }
     : {}),

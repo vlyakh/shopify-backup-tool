@@ -290,6 +290,7 @@ async function backupResource(
   query: string,
   rootField: string,
   resourceType: ResourceType,
+  onProgress?: () => Promise<void>,
 ): Promise<BackupResourceResult> {
   const nodes = await paginatedFetch(admin, query, rootField);
   const items: BackupResourceResult["items"] = [];
@@ -304,6 +305,7 @@ async function backupResource(
     await storage.put(storagePath, JSON.stringify(node, null, 2));
 
     items.push({ resourceType, resourceId, title, dataHash, storagePath });
+    if (onProgress) await onProgress();
   }
 
   return { count: nodes.length, items };
@@ -324,6 +326,19 @@ export async function runBackup(
     },
   });
 
+  // Throttled progress updater — bumps Backup.processedCount as items are
+  // saved so the dashboard can show a live count while IN_PROGRESS.
+  let processed = 0;
+  const onProgress = async () => {
+    processed++;
+    if (processed % 10 === 0) {
+      await prisma.backup.update({
+        where: { id: backup.id },
+        data: { processedCount: processed },
+      });
+    }
+  };
+
   try {
     const allItems: BackupResourceResult["items"] = [];
     let totalSize = 0;
@@ -331,7 +346,7 @@ export async function runBackup(
     // Products - all plans
     console.log(`[Backup ${backup.id}] Backing up products...`);
     const products = await backupResource(
-      admin, storeId, backup.id, PRODUCTS_QUERY, "products", "PRODUCT",
+      admin, storeId, backup.id, PRODUCTS_QUERY, "products", "PRODUCT", onProgress,
     );
     allItems.push(...products.items);
 
@@ -344,35 +359,35 @@ export async function runBackup(
     if (plan !== "FREE") {
       console.log(`[Backup ${backup.id}] Backing up collections...`);
       const collections = await backupResource(
-        admin, storeId, backup.id, COLLECTIONS_QUERY, "collections", "COLLECTION",
+        admin, storeId, backup.id, COLLECTIONS_QUERY, "collections", "COLLECTION", onProgress,
       );
       allItems.push(...collections.items);
       collectionCount = collections.count;
 
       console.log(`[Backup ${backup.id}] Backing up pages...`);
       const pages = await backupResource(
-        admin, storeId, backup.id, PAGES_QUERY, "pages", "PAGE",
+        admin, storeId, backup.id, PAGES_QUERY, "pages", "PAGE", onProgress,
       );
       allItems.push(...pages.items);
       pageCount = pages.count;
 
       console.log(`[Backup ${backup.id}] Backing up blog articles...`);
       const articles = await backupResource(
-        admin, storeId, backup.id, BLOG_ARTICLES_QUERY, "articles", "BLOG_POST",
+        admin, storeId, backup.id, BLOG_ARTICLES_QUERY, "articles", "BLOG_POST", onProgress,
       );
       allItems.push(...articles.items);
       blogPostCount = articles.count;
 
       console.log(`[Backup ${backup.id}] Backing up redirects...`);
       const redirects = await backupResource(
-        admin, storeId, backup.id, REDIRECTS_QUERY, "urlRedirects", "REDIRECT",
+        admin, storeId, backup.id, REDIRECTS_QUERY, "urlRedirects", "REDIRECT", onProgress,
       );
       allItems.push(...redirects.items);
       redirectCount = redirects.count;
 
       console.log(`[Backup ${backup.id}] Backing up menus...`);
       const menus = await backupResource(
-        admin, storeId, backup.id, MENUS_QUERY, "menus", "MENU",
+        admin, storeId, backup.id, MENUS_QUERY, "menus", "MENU", onProgress,
       );
       allItems.push(...menus.items);
     }
@@ -399,6 +414,7 @@ export async function runBackup(
         pageCount,
         blogPostCount,
         redirectCount,
+        processedCount: processed,
         sizeBytes: BigInt(totalSize),
       },
     });

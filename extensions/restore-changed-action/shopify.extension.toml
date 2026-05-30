@@ -9,3 +9,7 @@ type = "ui_extension"
   [[extensions.targeting]]
   module = "./src/RestoreChangedAction.jsx"
   target = "admin.product-index.action.render"
+
+  [[extensions.targeting]]
+  module = "./src/RestoreProductDetail.jsx"
+  target = "admin.product-details.action.render"

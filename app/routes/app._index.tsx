@@ -1,6 +1,12 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { useLoaderData, useSubmit, useNavigation } from "@remix-run/react";
+import { useEffect } from "react";
+import {
+  useLoaderData,
+  useSubmit,
+  useNavigation,
+  useRevalidator,
+} from "@remix-run/react";
 import {
   Page,
   Layout,
@@ -13,6 +19,7 @@ import {
   Badge,
   DataTable,
   EmptyState,
+  Spinner,
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
@@ -57,6 +64,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       pageCount: b.pageCount,
       blogPostCount: b.blogPostCount,
       redirectCount: b.redirectCount,
+      processedCount: b.processedCount,
       itemCount: b._count.items,
       errorMessage: b.errorMessage,
     })),
@@ -138,7 +146,19 @@ export default function Index() {
   const { store, backups, totalBackups, lastBackup } = useLoaderData<typeof loader>();
   const submit = useSubmit();
   const navigation = useNavigation();
-  const isBackingUp = navigation.state === "submitting";
+  const { revalidate } = useRevalidator();
+
+  // A backup currently running (e.g. the automatic one kicked off at install).
+  const activeBackup = backups.find((b) => b.status === "IN_PROGRESS");
+  const isActive = Boolean(activeBackup);
+  const isBackingUp = navigation.state === "submitting" || isActive;
+
+  // Poll for live progress while a backup is running.
+  useEffect(() => {
+    if (!isActive) return;
+    const interval = setInterval(() => revalidate(), 2000);
+    return () => clearInterval(interval);
+  }, [isActive, revalidate]);
 
   const handleBackup = () => {
     submit({ action: "backup" }, { method: "POST" });
@@ -171,6 +191,25 @@ export default function Index() {
     <Page>
       <TitleBar title="Store Backup" />
       <BlockStack gap="500">
+        {/* Live backup progress */}
+        {activeBackup && (
+          <Card>
+            <InlineStack gap="400" blockAlign="center">
+              <Spinner accessibilityLabel="Backup in progress" size="small" />
+              <BlockStack gap="100">
+                <Text as="h2" variant="headingMd">
+                  Backing up your store…
+                </Text>
+                <Text as="p" variant="bodySm" tone="subdued">
+                  {activeBackup.processedCount > 0
+                    ? `${activeBackup.processedCount} items saved so far`
+                    : "Starting backup…"}
+                </Text>
+              </BlockStack>
+            </InlineStack>
+          </Card>
+        )}
+
         {/* Stats Overview */}
         <Layout>
           <Layout.Section variant="oneThird">

@@ -71,6 +71,9 @@ model Backup {
   blogPostCount   Int @default(0)
   redirectCount   Int @default(0)
 
+  // Live progress: number of items saved so far (updated while IN_PROGRESS)
+  processedCount  Int @default(0)
+
   // Storage location (S3/Azure Blob path)
   storagePath String?
   sizeBytes   BigInt  @default(0)

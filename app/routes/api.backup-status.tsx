@@ -41,6 +41,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   return cors(
     json({
+      backupItemId: latestBackupItem?.id || null,
       lastBackedUp: latestBackupItem?.backup.createdAt.toISOString() || null,
       recentChanges,
     }),
