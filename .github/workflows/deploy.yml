@@ -24,7 +24,10 @@ jobs:
           cache: "npm"
 
       - name: Install dependencies
-        run: npm ci
+        # npm install (not ci): the Windows-generated lockfile omits Linux-only
+        # nested optional deps (@emnapi/* under @napi-rs/wasm-runtime), which
+        # makes the stricter `npm ci` fail on the Linux runner.
+        run: npm install
 
       - name: Generate Prisma client
         run: npx prisma generate

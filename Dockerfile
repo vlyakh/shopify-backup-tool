@@ -9,7 +9,7 @@ COPY package.json package-lock.json* ./
 COPY prisma ./prisma/
 
 # Install all dependencies (including devDependencies needed for build)
-RUN npm ci
+RUN npm install
 
 # ---- Stage 2: Build the application ----
 FROM node:22-alpine AS build
@@ -38,7 +38,7 @@ ENV PORT=3000
 # Copy package files and install production-only dependencies
 COPY package.json package-lock.json* ./
 COPY prisma ./prisma/
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm install --omit=dev && npm cache clean --force
 
 # Remove the Shopify CLI -- not needed in production and it's large
 RUN npm remove @shopify/cli 2>/dev/null || true
