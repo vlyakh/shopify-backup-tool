@@ -1,0 +1,11 @@
+api_version = "2025-07"
+
+[[extensions]]
+name = "Restore Changed Products"
+handle = "restore-changed-action"
+uid = "fe921190-7bce-4309-53bf-6e9acec0133f3aaac93d"
+type = "ui_extension"
+
+  [[extensions.targeting]]
+  module = "./src/RestoreChangedAction.jsx"
+  target = "admin.product-index.action.render"

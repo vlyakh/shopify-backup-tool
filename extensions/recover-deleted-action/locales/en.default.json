@@ -1,0 +1,7 @@
+{
+  "recover_deleted": "Recover Deleted Products",
+  "no_deleted": "No recently deleted products found in backups.",
+  "recovering": "Recovering...",
+  "recovered": "Product recovered successfully!",
+  "error": "Failed to recover product."
+}

@@ -1,0 +1,11 @@
+api_version = "2025-07"
+
+[[extensions]]
+name = "Recover Deleted Products"
+handle = "recover-deleted-action"
+uid = "db2a626e-6d0f-b945-6847-18b9656db6505d5c0df6"
+type = "ui_extension"
+
+  [[extensions.targeting]]
+  module = "./src/RecoverAction.jsx"
+  target = "admin.product-index.action.render"

@@ -1,0 +1,9 @@
+# Normalize line endings. Keep Linux-executed files as LF so the Azure
+# container's shell can run them regardless of contributor OS settings.
+* text=auto
+
+*.sh        text eol=lf
+startup.sh  text eol=lf
+Dockerfile  text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf

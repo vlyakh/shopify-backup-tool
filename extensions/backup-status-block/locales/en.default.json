@@ -1,0 +1,9 @@
+{
+  "backup_status": "Backup Status",
+  "last_backed_up": "Last backed up",
+  "never_backed_up": "Never backed up",
+  "backed_up_ago": "{{time}} ago",
+  "view_backups": "View Backups",
+  "protected": "Protected",
+  "not_protected": "Not Protected"
+}

@@ -1,0 +1,63 @@
+name: Deploy to Azure App Service
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: "22"
+  AZURE_WEBAPP_NAME: ${{ secrets.AZURE_WEBAPP_NAME }}
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Build Remix app
+        run: npm run build
+        env:
+          NODE_ENV: production
+
+      - name: Remove dev dependencies
+        run: npm prune --omit=dev
+
+      - name: Remove Shopify CLI (not needed in production)
+        run: npm remove @shopify/cli 2>/dev/null || true
+
+      - name: Copy startup script
+        run: chmod +x startup.sh
+
+      # Package the deployment artifact
+      - name: Create deployment package
+        run: |
+          zip -r deploy.zip \
+            build/ \
+            node_modules/ \
+            prisma/ \
+            package.json \
+            startup.sh \
+            -x "node_modules/.cache/*"
+
+      - name: Deploy to Azure App Service
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          package: deploy.zip
+          startup-command: ./startup.sh

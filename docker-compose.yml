@@ -1,0 +1,45 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://shopify_user:shopify_pass@db:5432/shopify_backup
+      NODE_ENV: production
+      PORT: "3000"
+      # Shopify credentials -- set these in your .env file
+      SHOPIFY_API_KEY: ${SHOPIFY_API_KEY}
+      SHOPIFY_API_SECRET: ${SHOPIFY_API_SECRET}
+      SCOPES: ${SCOPES}
+      SHOPIFY_APP_URL: ${SHOPIFY_APP_URL}
+      # Storage
+      STORAGE_PROVIDER: ${STORAGE_PROVIDER:-local}
+      STORAGE_LOCAL_PATH: ${STORAGE_LOCAL_PATH:-./storage}
+      AZURE_STORAGE_CONNECTION_STRING: ${AZURE_STORAGE_CONNECTION_STRING:-}
+      AZURE_STORAGE_CONTAINER: ${AZURE_STORAGE_CONTAINER:-shopify-backups}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: shopify_user
+      POSTGRES_PASSWORD: shopify_pass
+      POSTGRES_DB: shopify_backup
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shopify_user -d shopify_backup"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pgdata:

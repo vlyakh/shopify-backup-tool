@@ -1,0 +1,198 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Shopify app sessions (required by Shopify App Remix)
+model Session {
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+}
+
+// Store settings and subscription info
+model Store {
+  id        String   @id // shop domain e.g. "my-store.myshopify.com"
+  plan      Plan     @default(FREE)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Backup settings
+  autoBackupEnabled Boolean @default(false)
+  autoBackupHour    Int     @default(3) // UTC hour for daily backup
+  retentionDays     Int     @default(7)
+
+  // Webhook settings (premium tier)
+  webhooksEnabled Boolean @default(false)
+
+  backups         Backup[]
+  backupSchedules BackupSchedule[]
+}
+
+enum Plan {
+  FREE
+  STANDARD
+  PREMIUM
+}
+
+// A single backup snapshot
+model Backup {
+  id        String       @id @default(cuid())
+  storeId   String
+  store     Store        @relation(fields: [storeId], references: [id])
+  status    BackupStatus @default(PENDING)
+  trigger   BackupTrigger
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  // Summary stats
+  productCount    Int @default(0)
+  variantCount    Int @default(0)
+  collectionCount Int @default(0)
+  pageCount       Int @default(0)
+  blogPostCount   Int @default(0)
+  redirectCount   Int @default(0)
+
+  // Storage location (S3/Azure Blob path)
+  storagePath String?
+  sizeBytes   BigInt  @default(0)
+
+  // Error info
+  errorMessage String?
+
+  items BackupItem[]
+
+  @@index([storeId, createdAt])
+}
+
+enum BackupStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+}
+
+enum BackupTrigger {
+  MANUAL
+  SCHEDULED
+  WEBHOOK
+}
+
+// Individual backed-up resources within a backup
+model BackupItem {
+  id         String         @id @default(cuid())
+  backupId   String
+  backup     Backup         @relation(fields: [backupId], references: [id], onDelete: Cascade)
+  resourceType ResourceType
+  resourceId   String       // Shopify resource GID or numeric ID
+  title        String?      // Human-readable name
+  dataHash     String       // Hash of the JSON data for change detection
+  storagePath  String       // Path to the JSON blob in storage
+
+  @@index([backupId, resourceType])
+  @@index([resourceId])
+}
+
+enum ResourceType {
+  PRODUCT
+  COLLECTION
+  PAGE
+  BLOG_POST
+  REDIRECT
+  THEME
+  MENU
+  POLICY
+  METAOBJECT
+}
+
+enum BackupInterval {
+  EVERY_6H
+  EVERY_12H
+  DAILY
+  WEEKLY
+}
+
+// Schedule configuration for auto-backups
+model BackupSchedule {
+  id        String         @id @default(cuid())
+  storeId   String
+  store     Store          @relation(fields: [storeId], references: [id])
+  enabled   Boolean        @default(true)
+  interval  BackupInterval @default(DAILY)
+  cronExpr  String         @default("0 3 * * *") // Daily at 3 AM UTC
+  lastRunAt DateTime?
+  nextRunAt DateTime?
+
+  @@unique([storeId])
+}
+
+// Change log for premium tier (webhook-driven)
+model ChangeLog {
+  id           String       @id @default(cuid())
+  storeId      String
+  resourceType ResourceType
+  resourceId   String
+  action       ChangeAction
+  changedAt    DateTime     @default(now())
+
+  // Before/after snapshots stored in blob storage
+  beforePath String?
+  afterPath  String?
+
+  // Summary of what changed
+  changedFields String[] // e.g. ["title", "price", "variants[0].price"]
+
+  @@index([storeId, changedAt])
+  @@index([storeId, resourceType])
+}
+
+enum ChangeAction {
+  CREATED
+  UPDATED
+  DELETED
+}
+
+// Webhook intake queue — accepts events fast, processes in background
+model WebhookEvent {
+  id           String        @id @default(cuid())
+  storeId      String
+  topic        String        // e.g. "products/update", "collections/create"
+  resourceType ResourceType
+  resourceId   String
+  action       ChangeAction
+  payload      String        // Raw JSON payload from Shopify (stored as text)
+  status       WebhookStatus @default(PENDING)
+  attempts     Int           @default(0)
+  lastError    String?
+  createdAt    DateTime      @default(now())
+  processedAt  DateTime?
+
+  @@index([status, createdAt])
+  @@index([storeId])
+}
+
+enum WebhookStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED    // DLQ — moved here after max retries
+  SKIPPED   // Inventory-only change, not worth recording
+}

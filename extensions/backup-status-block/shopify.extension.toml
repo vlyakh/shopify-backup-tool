@@ -1,0 +1,11 @@
+api_version = "2025-07"
+
+[[extensions]]
+name = "Backup Status"
+handle = "backup-status-block"
+uid = "d7432ec1-7feb-61b4-3b0d-303e954304484874dcfa"
+type = "ui_extension"
+
+  [[extensions.targeting]]
+  module = "./src/BlockExtension.jsx"
+  target = "admin.product-details.block.render"

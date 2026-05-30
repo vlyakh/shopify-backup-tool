@@ -1,0 +1,7 @@
+{
+  "restore_changed": "Restore Changed Products",
+  "no_changes": "No products have changed since your last backup.",
+  "restoring": "Restoring...",
+  "restored": "Draft copy created from backup!",
+  "error": "Failed to restore product."
+}

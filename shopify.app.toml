@@ -1,0 +1,68 @@
+# This file stores configurations for your Shopify app.
+
+name = "Backup Restore Undo (Dev)"
+client_id = "d8251e1bc82233a5943f5426ee2510d4"
+application_url = "https://dev-v1-shopify-backup.azurewebsites.net"
+embedded = true
+
+[access_scopes]
+# Full read access for comprehensive backups
+scopes = "read_products,write_products,read_content,read_themes,read_online_store_navigation,read_online_store_pages,read_publications,read_script_tags,read_inventory,read_price_rules,read_discounts,read_metaobjects,read_metaobject_definitions"
+
+[auth]
+redirect_urls = [
+  "https://dev-v1-shopify-backup.azurewebsites.net/auth/callback",
+  "https://dev-v1-shopify-backup.azurewebsites.net/auth/shopify/callback",
+  "https://dev-v1-shopify-backup.azurewebsites.net/api/auth/callback",
+]
+
+[webhooks]
+api_version = "2026-04"
+
+  # App lifecycle webhooks
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/uninstalled"
+  topics = ["app/uninstalled"]
+
+  [[webhooks.subscriptions]]
+  topics = ["app/scopes_update"]
+  uri = "/webhooks/app/scopes_update"
+
+  # Product webhooks (premium tier - real-time change tracking)
+  [[webhooks.subscriptions]]
+  topics = ["products/create"]
+  uri = "/webhooks/products/create"
+
+  [[webhooks.subscriptions]]
+  topics = ["products/update"]
+  uri = "/webhooks/products/update"
+
+  [[webhooks.subscriptions]]
+  topics = ["products/delete"]
+  uri = "/webhooks/products/delete"
+
+  # Collection webhooks
+  [[webhooks.subscriptions]]
+  topics = ["collections/create"]
+  uri = "/webhooks/collections/create"
+
+  [[webhooks.subscriptions]]
+  topics = ["collections/update"]
+  uri = "/webhooks/collections/update"
+
+  [[webhooks.subscriptions]]
+  topics = ["collections/delete"]
+  uri = "/webhooks/collections/delete"
+
+  # Mandatory compliance webhooks (required for public apps)
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/customers/data_request"
+  compliance_topics = ["customers/data_request"]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/customers/redact"
+  compliance_topics = ["customers/redact"]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/shop/redact"
+  compliance_topics = ["shop/redact"]
