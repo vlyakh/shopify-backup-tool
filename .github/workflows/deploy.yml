@@ -43,8 +43,10 @@ jobs:
       - name: Remove Shopify CLI (not needed in production)
         run: npm remove @shopify/cli 2>/dev/null || true
 
-      - name: Copy startup script
-        run: chmod +x startup.sh
+      - name: Re-generate Prisma client after prune
+        # npm prune --omit=dev can delete the generated client at
+        # node_modules/.prisma, which the app needs at runtime.
+        run: npx prisma generate
 
       # Package the deployment artifact
       - name: Create deployment package
