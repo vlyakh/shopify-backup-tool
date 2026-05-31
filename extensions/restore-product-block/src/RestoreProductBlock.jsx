@@ -124,7 +124,9 @@ function RestoreProductBlock() {
               gap="base"
             >
               <BlockStack gap="none">
-                <Text fontWeight="bold">{change.label}</Text>
+                <InlineStack gap="none">
+                  <Badge>{change.label}</Badge>
+                </InlineStack>
                 <Text>
                   {change.before} {"→"} {change.after}
                 </Text>
