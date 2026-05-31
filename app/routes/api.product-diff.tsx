@@ -3,7 +3,6 @@ import { json } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { storage } from "../services/storage.server";
-import { getChangeHistory } from "../services/changelog.server";
 import { imageSignature } from "../services/image-signature.server";
 
 /**
@@ -268,27 +267,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }
 
   try {
-    // Per-event change history for this product, NEWEST FIRST. This is the only
-    // source of WHEN each change happened — the snapshot diff below only knows the
-    // current delta vs the latest backup. changedFields here are top-level NAMES
-    // (a single variant edit surfaces as "variants"); it is [] for CREATED/DELETED
-    // events and empty on stores without webhooks (ChangeLog isn't written then),
-    // so the popups fall back to the snapshot diff when timeline is empty.
-    const history = await getChangeHistory(session.shop, "PRODUCT", resourceId);
-    const timeline = history
-      .map((row) => ({
-        id: row.id,
-        changedAt: row.changedAt.toISOString(),
-        action: row.action,
-        fields: (row.changedFields ?? [])
-          .filter((f) => !TIMELINE_NOISE_KEYS.has(f))
-          .map((f) => ({ field: f, label: prettyLabel(f) })),
-      }))
-      // Drop UPDATED events whose only changes were noise keys (e.g. an inventory
-      // sync that just bumped updated_at) — they'd render as an empty "Updated"
-      // row. CREATED/DELETED legitimately carry no field list, so keep those.
-      .filter((ev) => ev.action !== "UPDATED" || ev.fields.length > 0);
-
     // Find the most recent COMPLETED backup item for this resource
     const latestBackupItem = await prisma.backupItem.findFirst({
       where: {
@@ -309,9 +287,37 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           backupItemId: null,
           lastBackedUp: null,
           changedFields: [],
+          timeline: [],
         }),
       );
     }
+
+    // The change ledger: webhook-recorded changes to this product SINCE its latest
+    // backup, newest first. A fresh backup is the new baseline, so it resets the
+    // ledger (changes before the backup are baked into it). Empty on stores without
+    // webhooks (ChangeLog isn't written then) — the popups then fall back to the
+    // snapshot diff. changedFields here are top-level NAMES (a variant edit shows
+    // as "variants"); noise keys (updated_at, variant_gids…) are filtered out.
+    const history = await prisma.changeLog.findMany({
+      where: {
+        storeId: session.shop,
+        resourceType: "PRODUCT",
+        resourceId,
+        changedAt: { gt: latestBackupItem.backup.createdAt },
+      },
+      orderBy: { changedAt: "desc" },
+      take: 50,
+    });
+    const timeline = history
+      .map((row) => ({
+        id: row.id,
+        changedAt: row.changedAt.toISOString(),
+        action: row.action,
+        fields: (row.changedFields ?? [])
+          .filter((f) => !TIMELINE_NOISE_KEYS.has(f))
+          .map((f) => ({ field: f, label: prettyLabel(f) })),
+      }))
+      .filter((ev) => ev.action !== "UPDATED" || ev.fields.length > 0);
 
     // Load the backed-up product JSON from storage. Degrade gracefully (read-only
     // status probe) to a no-backup response if the blob is missing/unreadable.
@@ -324,6 +330,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           backupItemId: null,
           lastBackedUp: null,
           changedFields: [],
+          timeline,
         }),
       );
     }

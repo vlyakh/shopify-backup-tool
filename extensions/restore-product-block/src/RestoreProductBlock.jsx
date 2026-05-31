@@ -25,22 +25,6 @@ function formatDate(dateString) {
   });
 }
 
-function actionLabel(action) {
-  return action === "CREATED"
-    ? "Created"
-    : action === "DELETED"
-      ? "Deleted"
-      : "Updated";
-}
-
-function actionTone(action) {
-  return action === "DELETED"
-    ? "critical"
-    : action === "CREATED"
-      ? "success"
-      : "info";
-}
-
 // Render groups for the popup. Lead with what's actually DIFFERENT from the
 // backup right now (with before→after values — this is exactly what Revert will
 // undo), then the ChangeLog history of WHEN each change happened (field names).
@@ -79,11 +63,6 @@ function ChangeTimeline({ groups }) {
           }
         >
           <BlockStack gap="small">
-            <InlineStack gap="small" blockAlignment="center">
-              <Badge tone={actionTone(event.action)}>
-                {actionLabel(event.action)}
-              </Badge>
-            </InlineStack>
             {event.fields && event.fields.length ? (
               event.fields.slice(0, MAX_FIELDS).map((f) => (
                 <InlineStack key={f.field} gap="small" blockAlignment="baseline">

@@ -223,7 +223,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // where access-denied (e.g. a missing scope) lands, and it was being swallowed.
     const productErrors = [
       ...(productResult.data?.productUpdate?.userErrors || []),
-      ...(productResult.errors || []),
+      ...((productResult as { errors?: Array<{ message: string }> }).errors ||
+        []),
     ] as Array<{ message: string }>;
 
     if (productErrors.length > 0) {
@@ -304,7 +305,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         // no-op into a visible warning instead of a false success.
         const vErrors = [
           ...(variantResult.data?.productVariantsBulkUpdate?.userErrors || []),
-          ...(variantResult.errors || []),
+          ...((variantResult as { errors?: Array<{ message: string }> })
+            .errors || []),
         ] as Array<{ message: string }>;
 
         if (vErrors.length > 0) {
