@@ -219,8 +219,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       variables: { product: productInput },
     });
     const productResult = await productResponse.json();
-    const productErrors =
-      productResult.data?.productUpdate?.userErrors || [];
+    // Include the TOP-LEVEL GraphQL `errors` array, not just userErrors — that's
+    // where access-denied (e.g. a missing scope) lands, and it was being swallowed.
+    const productErrors = [
+      ...(productResult.data?.productUpdate?.userErrors || []),
+      ...(productResult.errors || []),
+    ] as Array<{ message: string }>;
 
     if (productErrors.length > 0) {
       return cors(
@@ -293,13 +297,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           },
         );
         const variantResult = await variantResponse.json();
-        const vErrors =
-          variantResult.data?.productVariantsBulkUpdate?.userErrors || [];
+        // userErrors + top-level GraphQL errors. SKU/weight/tracked are
+        // InventoryItem fields and require write_inventory; without it Shopify
+        // returns a top-level "Access denied … write_inventory" error (and drops
+        // the inventoryItem block) — surfacing it here turns the old silent SKU
+        // no-op into a visible warning instead of a false success.
+        const vErrors = [
+          ...(variantResult.data?.productVariantsBulkUpdate?.userErrors || []),
+          ...(variantResult.errors || []),
+        ] as Array<{ message: string }>;
 
         if (vErrors.length > 0) {
-          variantErrors = vErrors.map(
-            (e: { message: string }) => e.message,
-          );
+          variantErrors = vErrors.map((e) => e.message);
         }
       }
     }
