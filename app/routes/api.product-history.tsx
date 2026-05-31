@@ -3,6 +3,7 @@ import { json } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { storage } from "../services/storage.server";
+import { isUndone } from "../services/revert-bookkeeping.server";
 
 /**
  * Change history (audit ledger) for a product's Undo popup. Returns each webhook
@@ -174,6 +175,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         if (NOISE_KEYS.has(field)) continue;
 
         if (field in SCALAR_LABELS) {
+          if (isUndone(event.id, field)) continue; // already undone → hide
           rows.push({
             changeId: event.id,
             changedAt,
@@ -195,12 +197,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             const suffix = multi ? ` · ${variantDesc(av)}` : "";
             for (const [sub, slabel] of VARIANT_FIELDS) {
               if (String(bv[sub] ?? "") !== String(av[sub] ?? "")) {
+                // token = variant:<subfield>:<gid>; subfield first so the gid
+                // (which itself contains ":") is the clean remainder on parse.
+                const token = `variant:${sub}:${av.admin_graphql_api_id}`;
+                if (isUndone(event.id, token)) continue; // already undone → hide
                 rows.push({
                   changeId: event.id,
                   changedAt,
-                  // token = variant:<subfield>:<gid>; subfield first so the gid
-                  // (which itself contains ":") is the clean remainder on parse.
-                  field: `variant:${sub}:${av.admin_graphql_api_id}`,
+                  field: token,
                   label: `${slabel}${suffix}`,
                   before: clip(bv[sub]),
                   after: clip(av[sub]),

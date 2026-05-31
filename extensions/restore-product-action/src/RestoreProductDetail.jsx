@@ -5,10 +5,10 @@ import {
   AdminAction,
   BlockStack,
   InlineStack,
+  Section,
   Text,
   Button,
   Badge,
-  Divider,
   ProgressIndicator,
 } from "@shopify/ui-extensions-react/admin";
 
@@ -21,10 +21,22 @@ function formatDate(s) {
   });
 }
 
+function groupByEvent(rows) {
+  const groups = [];
+  let cur = null;
+  for (const row of rows) {
+    if (!cur || cur.changeId !== row.changeId) {
+      cur = { changeId: row.changeId, changedAt: row.changedAt, rows: [] };
+      groups.push(cur);
+    }
+    cur.rows.push(row);
+  }
+  return groups;
+}
+
 /**
- * "Restore from Backup" action — the same change history as the block: each edit
- * since the last backup, with "Undo this edit" (set the field back to its value
- * just before that change).
+ * "Restore from Backup" action — same change history as the block, grouped by
+ * edit, with per-edit Undo.
  */
 function RestoreProductDetail() {
   const { close, data } = useApi();
@@ -33,7 +45,6 @@ function RestoreProductDetail() {
   const [loading, setLoading] = useState(true);
   const [hist, setHist] = useState(null);
   const [pending, setPending] = useState({});
-  const [done, setDone] = useState({});
   const [errors, setErrors] = useState({});
   const [allPending, setAllPending] = useState(false);
 
@@ -66,7 +77,7 @@ function RestoreProductDetail() {
       });
       const result = await r.json();
       if (r.ok && result.success) {
-        setDone((p) => ({ ...p, [key]: true }));
+        await load();
       } else {
         setErrors((p) => ({ ...p, [key]: result.error || "Undo failed" }));
       }
@@ -131,6 +142,8 @@ function RestoreProductDetail() {
     );
   }
 
+  const groups = groupByEvent(rows);
+
   return (
     <AdminAction
       title="Restore from Backup"
@@ -143,40 +156,46 @@ function RestoreProductDetail() {
     >
       <BlockStack gap="base">
         <Text>
-          Every change since your last backup. Undo any one on its own — others
-          stay.
+          Every change since your last backup. Undo any one on its own.
         </Text>
-        <Divider />
-        {rows.map((row, i) => {
-          const key = `${row.changeId}:${row.field}`;
-          return (
-            <BlockStack key={`${key}:${i}`} gap="small">
-              <Text fontStyle="italic">{formatDate(row.changedAt)}</Text>
-              <InlineStack
-                inlineAlignment="space-between"
-                blockAlignment="center"
-                gap="base"
-              >
-                <BlockStack gap="none">
-                  <InlineStack gap="none">
-                    <Badge>{row.label}</Badge>
-                  </InlineStack>
-                  <Text>
-                    {row.before} {"→"} {row.after}
-                  </Text>
-                </BlockStack>
-                {done[key] ? (
-                  <Badge tone="success">Undone</Badge>
-                ) : row.revertable ? (
-                  <Button onPress={() => undo(row)} disabled={pending[key]}>
-                    {pending[key] ? "Undoing…" : "Undo"}
-                  </Button>
-                ) : null}
-              </InlineStack>
-              {errors[key] ? <Badge tone="critical">{errors[key]}</Badge> : null}
+        {groups.map((g) => (
+          <Section key={g.changeId} heading={formatDate(g.changedAt)}>
+            <BlockStack gap="base">
+              {g.rows.map((row) => {
+                const key = `${row.changeId}:${row.field}`;
+                return (
+                  <BlockStack key={key} gap="none">
+                    <InlineStack
+                      inlineAlignment="space-between"
+                      blockAlignment="center"
+                      gap="base"
+                    >
+                      <BlockStack gap="none">
+                        <InlineStack gap="none">
+                          <Badge>{row.label}</Badge>
+                        </InlineStack>
+                        <Text>
+                          {row.before} {"→"} {row.after}
+                        </Text>
+                      </BlockStack>
+                      {row.revertable ? (
+                        <Button
+                          onPress={() => undo(row)}
+                          disabled={pending[key]}
+                        >
+                          {pending[key] ? "Undoing…" : "Undo"}
+                        </Button>
+                      ) : null}
+                    </InlineStack>
+                    {errors[key] ? (
+                      <Badge tone="critical">{errors[key]}</Badge>
+                    ) : null}
+                  </BlockStack>
+                );
+              })}
             </BlockStack>
-          );
-        })}
+          </Section>
+        ))}
       </BlockStack>
     </AdminAction>
   );

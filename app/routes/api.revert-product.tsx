@@ -4,6 +4,7 @@ import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { storage } from "../services/storage.server";
 import { imageSignature } from "../services/image-signature.server";
+import { suppressWebhooksFor } from "../services/revert-bookkeeping.server";
 
 /**
  * CORS preflight handler. Admin UI extensions are served cross-origin from
@@ -411,6 +412,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         mediaError instanceof Error ? mediaError.message : "Image restore failed",
       );
     }
+
+    // This product now matches the backup — skip the webhooks our own revert
+    // just fired so they don't reappear as new history rows.
+    suppressWebhooksFor(productId);
 
     return cors(
       json({

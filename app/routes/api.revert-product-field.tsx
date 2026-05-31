@@ -4,6 +4,10 @@ import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { storage } from "../services/storage.server";
 import { reconcileProductImages } from "../services/product-revert.server";
+import {
+  suppressNextWebhook,
+  markUndone,
+} from "../services/revert-bookkeeping.server";
 
 const PRODUCT_UPDATE_MUTATION = `#graphql
   mutation productUpdate($product: ProductUpdateInput!) {
@@ -125,6 +129,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           ...((result as { errors?: Array<{ message: string }> }).errors ?? []),
         ].map((e) => e.message);
         if (errs.length) return cors(json({ error: errs.join(", ") }, { status: 500 }));
+        suppressNextWebhook(productId);
+        markUndone(changeId, field);
         return cors(json({ success: true }));
       }
 
@@ -177,6 +183,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         ...((result as { errors?: Array<{ message: string }> }).errors ?? []),
       ].map((e) => e.message);
       if (errs.length) return cors(json({ error: errs.join(", ") }, { status: 500 }));
+      suppressNextWebhook(productId);
+      markUndone(changeId, field);
       return cors(json({ success: true }));
     } catch (error) {
       return cors(

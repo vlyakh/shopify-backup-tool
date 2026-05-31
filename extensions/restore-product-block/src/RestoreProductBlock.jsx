@@ -5,6 +5,7 @@ import {
   AdminBlock,
   BlockStack,
   InlineStack,
+  Section,
   Text,
   Button,
   Badge,
@@ -20,11 +21,25 @@ function formatDate(s) {
   });
 }
 
+// Group the flat history rows by ChangeLog event (rows are already ordered
+// newest-first and contiguous per event) so each edit is one dated Section.
+function groupByEvent(rows) {
+  const groups = [];
+  let cur = null;
+  for (const row of rows) {
+    if (!cur || cur.changeId !== row.changeId) {
+      cur = { changeId: row.changeId, changedAt: row.changedAt, rows: [] };
+      groups.push(cur);
+    }
+    cur.rows.push(row);
+  }
+  return groups;
+}
+
 /**
- * "Undo recent changes" block — a change HISTORY since the last backup. Each edit
- * is its own row (timestamp + field chip + before → after), so the same field
- * edited twice shows twice. "Undo this edit" sets the field back to what it was
- * immediately before that change; other fields (and other edits) are untouched.
+ * "Undo recent changes" — change history since the last backup, grouped by edit.
+ * Each row's "Undo" reverts just that field to its value before that edit; the
+ * server suppresses the undo's own webhook and hides the row, so the list clears.
  */
 function RestoreProductBlock() {
   const { data } = useApi();
@@ -33,7 +48,6 @@ function RestoreProductBlock() {
   const [hist, setHist] = useState(null);
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState({});
-  const [done, setDone] = useState({});
   const [errors, setErrors] = useState({});
   const [allPending, setAllPending] = useState(false);
 
@@ -69,7 +83,7 @@ function RestoreProductBlock() {
       });
       const result = await r.json();
       if (r.ok && result.success) {
-        setDone((p) => ({ ...p, [key]: true }));
+        await load(); // undone row is now hidden → it drops off the list
       } else {
         setErrors((p) => ({ ...p, [key]: result.error || "Undo failed" }));
       }
@@ -98,47 +112,54 @@ function RestoreProductBlock() {
   }
 
   if (loading) return null;
-  // Hide the card unless there's recorded history to act on.
   if (!hist?.hasBackup || !hist.rows || hist.rows.length === 0) return null;
+
+  const groups = groupByEvent(hist.rows);
 
   return (
     <AdminBlock title="Undo recent changes">
       <BlockStack gap="base">
         <Text>
-          Every change since your last backup. Undo any one on its own — others
-          stay.
+          Every change since your last backup. Undo any one on its own.
         </Text>
-        <Divider />
-        {hist.rows.map((row, i) => {
-          const key = `${row.changeId}:${row.field}`;
-          return (
-            <BlockStack key={`${key}:${i}`} gap="small">
-              <Text fontStyle="italic">{formatDate(row.changedAt)}</Text>
-              <InlineStack
-                inlineAlignment="space-between"
-                blockAlignment="center"
-                gap="base"
-              >
-                <BlockStack gap="none">
-                  <InlineStack gap="none">
-                    <Badge>{row.label}</Badge>
-                  </InlineStack>
-                  <Text>
-                    {row.before} {"→"} {row.after}
-                  </Text>
-                </BlockStack>
-                {done[key] ? (
-                  <Badge tone="success">Undone</Badge>
-                ) : row.revertable ? (
-                  <Button onPress={() => undo(row)} disabled={pending[key]}>
-                    {pending[key] ? "Undoing…" : "Undo"}
-                  </Button>
-                ) : null}
-              </InlineStack>
-              {errors[key] ? <Badge tone="critical">{errors[key]}</Badge> : null}
+        {groups.map((g) => (
+          <Section key={g.changeId} heading={formatDate(g.changedAt)}>
+            <BlockStack gap="base">
+              {g.rows.map((row) => {
+                const key = `${row.changeId}:${row.field}`;
+                return (
+                  <BlockStack key={key} gap="none">
+                    <InlineStack
+                      inlineAlignment="space-between"
+                      blockAlignment="center"
+                      gap="base"
+                    >
+                      <BlockStack gap="none">
+                        <InlineStack gap="none">
+                          <Badge>{row.label}</Badge>
+                        </InlineStack>
+                        <Text>
+                          {row.before} {"→"} {row.after}
+                        </Text>
+                      </BlockStack>
+                      {row.revertable ? (
+                        <Button
+                          onPress={() => undo(row)}
+                          disabled={pending[key]}
+                        >
+                          {pending[key] ? "Undoing…" : "Undo"}
+                        </Button>
+                      ) : null}
+                    </InlineStack>
+                    {errors[key] ? (
+                      <Badge tone="critical">{errors[key]}</Badge>
+                    ) : null}
+                  </BlockStack>
+                );
+              })}
             </BlockStack>
-          );
-        })}
+          </Section>
+        ))}
         <Divider />
         <Button onPress={revertAll} disabled={allPending}>
           {allPending ? "Reverting all…" : "Revert all to backup"}
