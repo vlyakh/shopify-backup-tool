@@ -2,6 +2,8 @@
   "restore_product": "Restore Product from Backup",
   "checking": "Checking backups…",
   "no_backup": "No backup found for this product yet.",
+  "unchanged": "This product matches your last backup — nothing to restore.",
+  "last_backed_up": "Last backed up {{time}}",
   "revert": "Revert to backup",
   "reverting": "Reverting…",
   "reverted": "Reverted to backup",

@@ -1,0 +1,10 @@
+api_version = "2025-07"
+
+[[extensions]]
+name = "Undo Product Changes"
+handle = "restore-product-block"
+type = "ui_extension"
+
+  [[extensions.targeting]]
+  module = "./src/RestoreProductBlock.jsx"
+  target = "admin.product-details.block.render"

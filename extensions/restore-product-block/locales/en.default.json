@@ -1,0 +1,10 @@
+{
+  "title": "Undo recent changes",
+  "changed_since_backup": "This product was changed since your last backup.",
+  "last_backed_up": "Last backed up {{time}}",
+  "revert": "Revert to backup",
+  "reverting": "Reverting…",
+  "reverted": "Reverted to backup",
+  "more_fields": "+{{count}} more",
+  "error": "Revert failed"
+}

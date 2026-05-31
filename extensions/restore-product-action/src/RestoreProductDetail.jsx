@@ -7,8 +7,11 @@ import {
   Text,
   Button,
   Badge,
+  Divider,
   ProgressIndicator,
 } from "@shopify/ui-extensions-react/admin";
+
+const MAX_FIELDS = 6;
 
 function formatDate(dateString) {
   return new Date(dateString).toLocaleDateString("en-US", {
@@ -25,32 +28,32 @@ function RestoreProductDetail() {
   const productId = data?.selected?.[0]?.id;
 
   const [loading, setLoading] = useState(true);
-  const [status, setStatus] = useState(null);
+  const [diff, setDiff] = useState(null);
   const [restoring, setRestoring] = useState(false);
   const [done, setDone] = useState(null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    async function fetchStatus() {
+    async function fetchDiff() {
       try {
         const response = await fetch(
-          `/api/backup-status?resourceId=${encodeURIComponent(productId)}`,
+          `/api/product-diff?resourceId=${encodeURIComponent(productId)}`,
         );
         if (response.ok) {
-          setStatus(await response.json());
+          setDiff(await response.json());
         }
       } catch (err) {
-        console.error("Failed to fetch backup status:", err);
+        console.error("Failed to fetch product diff:", err);
       } finally {
         setLoading(false);
       }
     }
-    if (productId) fetchStatus();
+    if (productId) fetchDiff();
     else setLoading(false);
   }, [productId]);
 
   async function handleRevert() {
-    if (!status?.backupItemId) return;
+    if (!diff?.backupItemId) return;
     setRestoring(true);
     setError(null);
     try {
@@ -59,7 +62,7 @@ function RestoreProductDetail() {
       // body is a "simple" request; request.json() still parses it server-side.
       const response = await fetch("/api/revert-product", {
         method: "POST",
-        body: JSON.stringify({ backupItemId: status.backupItemId }),
+        body: JSON.stringify({ backupItemId: diff.backupItemId }),
       });
       const result = await response.json();
       if (response.ok && result.success) {
@@ -89,7 +92,7 @@ function RestoreProductDetail() {
     );
   }
 
-  if (!status?.backupItemId) {
+  if (!diff?.hasBackup) {
     return (
       <AdminAction
         title="Restore from Backup"
@@ -102,6 +105,32 @@ function RestoreProductDetail() {
       </AdminAction>
     );
   }
+
+  // Backup exists but the live product matches it (also covers deleted:true) —
+  // nothing to restore, so no Revert button.
+  if (!diff.changed) {
+    return (
+      <AdminAction
+        title="Restore from Backup"
+        secondaryAction={<Button onPress={close}>Close</Button>}
+      >
+        <BlockStack gap="base">
+          <Text>
+            This product matches your last backup — nothing to restore.
+          </Text>
+          {diff.lastBackedUp ? (
+            <Text appearance="subdued" size="small">
+              Last backed up {formatDate(diff.lastBackedUp)}.
+            </Text>
+          ) : null}
+        </BlockStack>
+      </AdminAction>
+    );
+  }
+
+  const changedFields = diff.changedFields || [];
+  const visibleFields = changedFields.slice(0, MAX_FIELDS);
+  const hiddenCount = changedFields.length - visibleFields.length;
 
   return (
     <AdminAction
@@ -122,12 +151,23 @@ function RestoreProductDetail() {
           <>
             <Text>
               Last backed up{" "}
-              {status.lastBackedUp ? formatDate(status.lastBackedUp) : "—"}.
+              {diff.lastBackedUp ? formatDate(diff.lastBackedUp) : "—"}.
             </Text>
+            <Divider />
+            {visibleFields.map((change) => (
+              <BlockStack key={change.field} gap="none">
+                <Text fontWeight="bold">{change.field}</Text>
+                <Text appearance="subdued" size="small">
+                  {change.before} {"→"} {change.after}
+                </Text>
+              </BlockStack>
+            ))}
+            {hiddenCount > 0 ? (
+              <Text appearance="subdued" size="small">
+                +{hiddenCount} more
+              </Text>
+            ) : null}
             <Text appearance="subdued" size="small">
-              {status.recentChanges > 0
-                ? `${status.recentChanges} change${status.recentChanges !== 1 ? "s" : ""} recorded since the backup. `
-                : ""}
               Reverting overwrites this product with the backed-up version.
             </Text>
             {error ? (

@@ -1,11 +1,12 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   useLoaderData,
   useSubmit,
   useNavigation,
   useRevalidator,
+  useFetcher,
 } from "@remix-run/react";
 import {
   Page,
@@ -25,6 +26,7 @@ import { TitleBar } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { runBackup } from "../services/backup.server";
+import type { loader as changedProductsLoader } from "./api.changed-products";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -140,6 +142,164 @@ function TriggerBadge({ trigger }: { trigger: string }) {
     WEBHOOK: "Real-time",
   };
   return <Badge tone={toneMap[trigger]}>{labelMap[trigger] || trigger}</Badge>;
+}
+
+type ChangedProduct = {
+  backupItemId: string;
+  resourceId: string;
+  title: string;
+  changedAt: string;
+  changedFields: string[];
+  changeCount: number;
+};
+
+/**
+ * "Restore changes" card. Lists products that have been modified since the last
+ * completed backup (via GET /api/changed-products) and lets the merchant revert
+ * each one to its backed-up version (POST /api/revert-product).
+ *
+ * Fully client-driven so the page loader/action stay untouched:
+ *  - useFetcher loads the changed-products list on mount.
+ *  - Per-row revert uses a same-origin client fetch. This is an embedded app
+ *    route (NOT a cross-origin extension), so sending Content-Type: application/json
+ *    is fine here — there's no CORS preflight to worry about.
+ *  - After a successful revert the row's product drops off, so we re-load the list.
+ */
+function RestoreChanges() {
+  const changedFetcher = useFetcher<typeof changedProductsLoader>();
+  const [pending, setPending] = useState<Record<string, boolean>>({});
+  const [done, setDone] = useState<Record<string, string>>({});
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  // Load the changed-products list once on mount.
+  useEffect(() => {
+    if (changedFetcher.state === "idle" && !changedFetcher.data) {
+      changedFetcher.load("/api/changed-products");
+    }
+  }, [changedFetcher]);
+
+  const products = (changedFetcher.data?.products ?? []) as ChangedProduct[];
+  const isLoading = changedFetcher.state !== "idle" && !changedFetcher.data;
+
+  async function handleRevert(backupItemId: string) {
+    setPending((prev) => ({ ...prev, [backupItemId]: true }));
+    setErrors((prev) => ({ ...prev, [backupItemId]: "" }));
+
+    try {
+      const response = await fetch("/api/revert-product", {
+        method: "POST",
+        // Same-origin embedded app route: Content-Type is allowed here (no CORS
+        // preflight). Extensions, by contrast, must omit it.
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ backupItemId }),
+      });
+      const result = await response.json();
+
+      if (response.ok && result.success) {
+        setDone((prev) => ({
+          ...prev,
+          [backupItemId]: result.variantWarnings
+            ? `Reverted (${result.variantWarnings.length} variant warning${
+                result.variantWarnings.length !== 1 ? "s" : ""
+              })`
+            : "Reverted",
+        }));
+        // The product now matches the backup; refresh the list so it drops off.
+        changedFetcher.load("/api/changed-products");
+      } else {
+        setErrors((prev) => ({
+          ...prev,
+          [backupItemId]: result.error || "Revert failed",
+        }));
+      }
+    } catch {
+      setErrors((prev) => ({ ...prev, [backupItemId]: "Network error" }));
+    } finally {
+      setPending((prev) => ({ ...prev, [backupItemId]: false }));
+    }
+  }
+
+  let body;
+  if (isLoading) {
+    body = (
+      <InlineStack gap="200" blockAlign="center">
+        <Spinner size="small" accessibilityLabel="Loading changed products" />
+        <Text as="p" variant="bodySm" tone="subdued">
+          Checking for changes…
+        </Text>
+      </InlineStack>
+    );
+  } else if (products.length === 0) {
+    body = (
+      <Text as="p" variant="bodySm" tone="subdued">
+        All products match your last backup. Nothing to restore.
+      </Text>
+    );
+  } else {
+    const rows = products.map((item) => {
+      const changedSummary =
+        item.changedFields && item.changedFields.length > 0
+          ? `${item.changedFields.slice(0, 3).join(", ")}${
+              item.changedFields.length > 3 ? "…" : ""
+            }`
+          : "";
+      return [
+        item.title || "Unknown product",
+        [formatDate(item.changedAt), changedSummary].filter(Boolean).join(" · "),
+        done[item.backupItemId] ? (
+          <Badge key={`d-${item.backupItemId}`} tone="success">
+            {done[item.backupItemId]}
+          </Badge>
+        ) : errors[item.backupItemId] ? (
+          <InlineStack key={`e-${item.backupItemId}`} gap="200" blockAlign="center">
+            <Badge tone="critical">Failed</Badge>
+            <Button
+              size="slim"
+              onClick={() => handleRevert(item.backupItemId)}
+              loading={pending[item.backupItemId]}
+            >
+              Retry
+            </Button>
+          </InlineStack>
+        ) : (
+          <Button
+            key={`b-${item.backupItemId}`}
+            size="slim"
+            onClick={() => handleRevert(item.backupItemId)}
+            loading={pending[item.backupItemId]}
+            disabled={pending[item.backupItemId]}
+          >
+            Revert
+          </Button>
+        ),
+      ];
+    });
+
+    body = (
+      <DataTable
+        columnContentTypes={["text", "text", "text"]}
+        headings={["Product", "Changed", ""]}
+        rows={rows}
+      />
+    );
+  }
+
+  return (
+    <Card>
+      <BlockStack gap="400">
+        <BlockStack gap="100">
+          <Text as="h2" variant="headingMd">
+            Restore changes
+          </Text>
+          <Text as="p" variant="bodySm" tone="subdued">
+            Products modified since your last backup. Revert any to its backed-up
+            version.
+          </Text>
+        </BlockStack>
+        {body}
+      </BlockStack>
+    </Card>
+  );
 }
 
 export default function Index() {
@@ -305,6 +465,9 @@ export default function Index() {
             )}
           </BlockStack>
         </Card>
+
+        {/* Restore changes */}
+        <RestoreChanges />
 
         {/* Plan Upgrade Banner */}
         {store?.plan === "FREE" && (
