@@ -44,6 +44,32 @@ export async function recordChange(
         const after = data as Record<string, unknown>;
         computeChangedFields(before, after, "", changedFields);
       }
+    } else if (resourceType === "PRODUCT") {
+      // First-ever tracked edit of this product: no prior snapshot to chain from,
+      // so diff against the latest backup. The backup is GraphQL-shaped (camelCase);
+      // convert it to the REST shape the webhook + history expect, store it as the
+      // baseline `before`, and diff — otherwise the first edit is silently lost.
+      const backupItem = await prisma.backupItem.findFirst({
+        where: {
+          resourceId,
+          resourceType: "PRODUCT",
+          backup: { storeId, status: "COMPLETED" },
+        },
+        orderBy: { backup: { createdAt: "desc" } },
+      });
+      const raw = backupItem ? await storage.get(backupItem.storagePath) : null;
+      if (raw) {
+        const restBaseline = graphqlBackupToRest(JSON.parse(raw));
+        const baselinePath = `${storeId}/changes/PRODUCT/${encodeURIComponent(resourceId)}/${timestamp}-baseline.json`;
+        await storage.put(baselinePath, JSON.stringify(restBaseline, null, 2));
+        beforePath = baselinePath;
+        changedFields.push(
+          ...firstEventChangedFields(
+            restBaseline,
+            data as Record<string, unknown>,
+          ),
+        );
+      }
     }
   }
 
@@ -81,6 +107,91 @@ function computeChangedFields(
       result.push(fullKey);
     }
   }
+}
+
+/**
+ * Convert a backed-up product (GraphQL/camelCase, as stored by backup.server.ts)
+ * into the REST/snake_case shape that products/update webhook payloads use, so a
+ * product's first-ever tracked edit can be diffed against the backup uniformly.
+ * Only carries the fields the history + per-edit revert read.
+ */
+function graphqlBackupToRest(
+  g: Record<string, any>,
+): Record<string, unknown> {
+  const variants = ((g.variants?.nodes as Array<Record<string, any>>) ?? []).map(
+    (v) => ({
+      admin_graphql_api_id: v.id,
+      title: v.title,
+      sku: v.sku ?? null,
+      price: v.price ?? null,
+      compare_at_price: v.compareAtPrice ?? null,
+      barcode: v.barcode ?? null,
+      option1: v.selectedOptions?.[0]?.value ?? null,
+      option2: v.selectedOptions?.[1]?.value ?? null,
+      option3: v.selectedOptions?.[2]?.value ?? null,
+    }),
+  );
+  return {
+    admin_graphql_api_id: g.id,
+    title: g.title,
+    body_html: g.descriptionHtml,
+    vendor: g.vendor,
+    product_type: g.productType,
+    handle: g.handle,
+    status: String(g.status ?? "").toLowerCase(),
+    tags: Array.isArray(g.tags) ? g.tags.join(", ") : (g.tags ?? ""),
+    template_suffix: g.templateSuffix ?? null,
+    variants,
+  };
+}
+
+/**
+ * Field-aware diff for the first event (REST baseline vs REST webhook payload).
+ * Returns REST top-level keys that changed — only the ones the history surfaces,
+ * so it avoids the shape-mismatch false positives a shallow stringify would give.
+ */
+function firstEventChangedFields(
+  baseline: Record<string, unknown>,
+  after: Record<string, unknown>,
+): string[] {
+  const norm = (v: unknown) => String(v ?? "");
+  const tagsKey = (v: unknown) =>
+    String(v ?? "")
+      .split(/,\s*/)
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .sort()
+      .join(",");
+
+  const changed: string[] = [];
+  for (const f of [
+    "title",
+    "body_html",
+    "vendor",
+    "product_type",
+    "handle",
+    "status",
+  ]) {
+    if (norm(baseline[f]) !== norm(after[f])) changed.push(f);
+  }
+  if (tagsKey(baseline.tags) !== tagsKey(after.tags)) changed.push("tags");
+
+  const bVars = (baseline.variants as Array<Record<string, unknown>>) ?? [];
+  const aVars = (after.variants as Array<Record<string, unknown>>) ?? [];
+  const variantChanged = aVars.some((av) => {
+    const bv = bVars.find(
+      (v) => v.admin_graphql_api_id === av.admin_graphql_api_id,
+    );
+    return (
+      !!bv &&
+      ["price", "compare_at_price", "barcode", "sku"].some(
+        (s) => norm(bv[s]) !== norm(av[s]),
+      )
+    );
+  });
+  if (variantChanged) changed.push("variants");
+
+  return changed;
 }
 
 /**
