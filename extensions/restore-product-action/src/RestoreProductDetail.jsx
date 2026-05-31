@@ -192,6 +192,10 @@ function RestoreProductDetail() {
             </BlockStack>
           </Section>
         ))}
+        <Text fontStyle="italic">
+          Only changes since your last backup appear here. For anything older,
+          restore a backup from the Store Backup app.
+        </Text>
       </BlockStack>
     </AdminAction>
   );
