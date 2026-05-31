@@ -166,13 +166,17 @@ const FIELD_LABELS: Record<string, string> = {
   published_at: "Published",
 };
 
-// Timestamp / identity keys that bump on essentially every product webhook and
-// would otherwise render as noise badges ("Updated_at") in the timeline.
+// Webhook payload keys that bump on essentially every product update and would
+// otherwise render as noise badges ("Updated_at", "Variant Gids") in the timeline.
+// variant_gids/variant_ids are internal id-lists redundant with `variants`.
 const TIMELINE_NOISE_KEYS = new Set([
   "updated_at",
   "created_at",
   "admin_graphql_api_id",
   "id",
+  "variant_gids",
+  "variant_ids",
+  "published_scope",
 ]);
 
 function prettyLabel(field: string): string {
@@ -235,8 +239,10 @@ function summarizeField(field: string, before: unknown, after: unknown): string 
       return `Tags: ${head}${tags.length > 3 ? ` (+${tags.length - 3} more)` : ""}`;
     }
     case "category": {
-      const name = (after as { name?: string } | null)?.name;
-      return name ? `Category: ${name}` : "Category cleared";
+      const b = (before as { name?: string } | null)?.name;
+      const a = (after as { name?: string } | null)?.name;
+      if (b || a) return `${b ?? "—"} → ${a ?? "—"}`;
+      return "Category updated";
     }
     case "seo":
       return "SEO updated";

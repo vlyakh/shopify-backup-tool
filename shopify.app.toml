@@ -7,7 +7,7 @@ embedded = true
 
 [access_scopes]
 # Full read access for comprehensive backups
-scopes = "read_products,write_products,read_content,read_themes,read_online_store_navigation,read_online_store_pages,read_publications,read_script_tags,read_inventory,read_price_rules,read_discounts,read_metaobjects,read_metaobject_definitions"
+scopes = "read_products,write_products,read_content,read_themes,read_online_store_navigation,read_online_store_pages,read_publications,read_script_tags,read_inventory,write_inventory,read_price_rules,read_discounts,read_metaobjects,read_metaobject_definitions"
 
 [auth]
 redirect_urls = [

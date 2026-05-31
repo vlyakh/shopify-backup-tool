@@ -42,23 +42,27 @@ function actionTone(action) {
       : "info";
 }
 
-// Prefer the ChangeLog history (per-event timestamps); otherwise synthesize one
-// group from the current snapshot diff so webhook-less stores still get a
-// readable (non-JSON) view.
+// Lead with what's actually DIFFERENT from the backup right now (with before→after
+// values — exactly what Revert undoes), then the ChangeLog history of WHEN each
+// change happened (field names).
 function buildGroups(diff) {
-  if (diff.timeline && diff.timeline.length) return diff.timeline;
-  return [
-    {
+  const groups = [];
+  if (diff.changedFields && diff.changedFields.length) {
+    groups.push({
       id: "current",
-      changedAt: diff.lastBackedUp,
+      heading: "Changed since last backup",
       action: "UPDATED",
-      fields: (diff.changedFields || []).map((c) => ({
+      fields: diff.changedFields.map((c) => ({
         field: c.field,
         label: c.label,
         summary: c.summary,
       })),
-    },
-  ];
+    });
+  }
+  if (diff.timeline && diff.timeline.length) {
+    for (const event of diff.timeline) groups.push(event);
+  }
+  return groups;
 }
 
 // Newest-first timeline: a timestamp header per event, the action as a badge,
@@ -70,7 +74,8 @@ function ChangeTimeline({ groups }) {
         <Section
           key={event.id}
           heading={
-            event.changedAt ? formatDate(event.changedAt) : "Recent changes"
+            event.heading ||
+            (event.changedAt ? formatDate(event.changedAt) : "Recent changes")
           }
         >
           <BlockStack gap="small">

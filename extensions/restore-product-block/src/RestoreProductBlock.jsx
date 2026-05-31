@@ -41,23 +41,27 @@ function actionTone(action) {
       : "info";
 }
 
-// Render groups for the timeline: prefer the ChangeLog history (has per-event
-// timestamps); otherwise synthesize one group from the current snapshot diff so
-// stores without webhooks still get a readable (non-JSON) view.
+// Render groups for the popup. Lead with what's actually DIFFERENT from the
+// backup right now (with before→after values — this is exactly what Revert will
+// undo), then the ChangeLog history of WHEN each change happened (field names).
 function buildGroups(diff) {
-  if (diff.timeline && diff.timeline.length) return diff.timeline;
-  return [
-    {
+  const groups = [];
+  if (diff.changedFields && diff.changedFields.length) {
+    groups.push({
       id: "current",
-      changedAt: diff.lastBackedUp,
+      heading: "Changed since last backup",
       action: "UPDATED",
-      fields: (diff.changedFields || []).map((c) => ({
+      fields: diff.changedFields.map((c) => ({
         field: c.field,
         label: c.label,
         summary: c.summary,
       })),
-    },
-  ];
+    });
+  }
+  if (diff.timeline && diff.timeline.length) {
+    for (const event of diff.timeline) groups.push(event);
+  }
+  return groups;
 }
 
 // One newest-first timeline of change events: a timestamp header per event, the
@@ -70,7 +74,8 @@ function ChangeTimeline({ groups }) {
         <Section
           key={event.id}
           heading={
-            event.changedAt ? formatDate(event.changedAt) : "Recent changes"
+            event.heading ||
+            (event.changedAt ? formatDate(event.changedAt) : "Recent changes")
           }
         >
           <BlockStack gap="small">

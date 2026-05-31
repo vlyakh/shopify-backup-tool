@@ -159,7 +159,20 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const productId = backupItem.resourceId; // GID like gid://shopify/Product/123
 
   try {
-    // Step 1: Update product-level fields
+    // The "Uncategorized" placeholder category (id ".../na") is the "no category"
+    // sentinel and is NOT an assignable id, so map it (and a missing category) to
+    // null — reverting to Uncategorized means CLEARING the category, not assigning
+    // the sentinel (which would error).
+    const backupCategoryId = (data.category as { id?: string } | null)?.id;
+    const categoryValue =
+      backupCategoryId && !backupCategoryId.endsWith("/na")
+        ? backupCategoryId
+        : null;
+
+    // Step 1: Update product-level fields. productUpdate is non-destructive (it
+    // only touches the fields passed) — unlike productSet, which treats variants
+    // as a full set and would DELETE any variant beyond the backup's 100-variant
+    // cap. category/status/handle were previously missing, so they never reverted.
     const productInput: Record<string, unknown> = {
       id: productId,
       title: data.title,
@@ -168,10 +181,38 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       vendor: data.vendor,
       tags: data.tags,
       templateSuffix: data.templateSuffix,
+      category: categoryValue, // ProductUpdateInput.category: ID (or null to clear)
+      status: data.status, // ProductStatus enum (ACTIVE/DRAFT/ARCHIVED)
+      handle: data.handle, // may be silently uniquified if the handle is taken
     };
 
     if (data.seo) {
       productInput.seo = data.seo;
+    }
+
+    // Metafields: upsert by namespace+key (id not required). This reverts changed
+    // values and re-adds deleted ones, but is ADDITIVE — it does NOT remove
+    // metafields the user added after the backup (productUpdate can't full-set
+    // them; productSet could, but we avoid it for its variant-deletion risk).
+    const metafieldNodes = (
+      data.metafields as
+        | {
+            nodes?: Array<{
+              namespace?: string;
+              key?: string;
+              value?: string;
+              type?: string;
+            }>;
+          }
+        | undefined
+    )?.nodes;
+    if (metafieldNodes?.length) {
+      productInput.metafields = metafieldNodes.map((m) => ({
+        namespace: m.namespace,
+        key: m.key,
+        value: m.value,
+        type: m.type,
+      }));
     }
 
     const productResponse = await admin.graphql(PRODUCT_UPDATE_MUTATION, {
