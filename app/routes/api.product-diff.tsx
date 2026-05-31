@@ -343,6 +343,143 @@ function summarizeField(field: string, before: unknown, after: unknown): string 
   }
 }
 
+// A single, independently-revertable change (backup → live) for the per-change
+// Undo UX. `target` tells /api/revert-product-field exactly what to revert.
+type Change = {
+  id: string;
+  label: string;
+  before: string;
+  after: string;
+  target:
+    | { kind: "product"; field: string }
+    | { kind: "variant"; variantId: string; field: string };
+};
+
+// The "Uncategorized" placeholder (id ".../na") and a missing category both mean
+// "no category" — normalize so they compare equal (avoids a false category diff).
+function normCategoryId(c: unknown): string | null {
+  const id = (c as { id?: string } | null)?.id;
+  return !id || id.endsWith("/na") ? null : id;
+}
+
+function shortValue(v: unknown): string {
+  if (v === null || v === undefined || v === "") return "—";
+  const s = typeof v === "string" ? v : JSON.stringify(v);
+  return s.length > 60 ? s.slice(0, 59) + "…" : s;
+}
+
+function variantNodes(v: unknown): Array<Record<string, unknown>> {
+  if (
+    v &&
+    typeof v === "object" &&
+    Array.isArray((v as { nodes?: unknown[] }).nodes)
+  ) {
+    return (v as { nodes: Array<Record<string, unknown>> }).nodes;
+  }
+  return [];
+}
+
+/**
+ * Flatten the backup→live diff into a list of granular, independently-revertable
+ * changes: each product field, each changed variant subfield (price/sku/…), and
+ * images. This drives the per-change Undo UI (revert one, keep the rest).
+ */
+function buildChanges(
+  backup: Record<string, unknown>,
+  live: Record<string, unknown>,
+): Change[] {
+  const changes: Change[] = [];
+  const push = (
+    id: string,
+    label: string,
+    before: unknown,
+    after: unknown,
+    target: Change["target"],
+  ) =>
+    changes.push({
+      id,
+      label,
+      before: shortValue(before),
+      after: shortValue(after),
+      target,
+    });
+
+  const SCALARS: Array<[string, string]> = [
+    ["title", "Title"],
+    ["handle", "Handle"],
+    ["productType", "Product type"],
+    ["vendor", "Vendor"],
+    ["status", "Status"],
+    ["templateSuffix", "Template"],
+  ];
+  for (const [field, label] of SCALARS) {
+    if (JSON.stringify(backup[field]) !== JSON.stringify(live[field])) {
+      push(field, label, backup[field], live[field], { kind: "product", field });
+    }
+  }
+
+  if (
+    JSON.stringify(backup.descriptionHtml) !==
+    JSON.stringify(live.descriptionHtml)
+  ) {
+    const strip = (v: unknown) =>
+      String(v ?? "")
+        .replace(/<[^>]*>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    push("descriptionHtml", "Description", strip(backup.descriptionHtml), strip(live.descriptionHtml), { kind: "product", field: "descriptionHtml" });
+  }
+
+  if (JSON.stringify(backup.tags) !== JSON.stringify(live.tags)) {
+    const t = (v: unknown) => (Array.isArray(v) ? (v as string[]).join(", ") : "—");
+    push("tags", "Tags", t(backup.tags), t(live.tags), { kind: "product", field: "tags" });
+  }
+
+  if (normCategoryId(backup.category) !== normCategoryId(live.category)) {
+    const name = (c: unknown) => (c as { name?: string } | null)?.name || "—";
+    push("category", "Category", name(backup.category), name(live.category), { kind: "product", field: "category" });
+  }
+
+  if (JSON.stringify(backup.seo) !== JSON.stringify(live.seo)) {
+    push("seo", "SEO", (backup.seo as { title?: string } | null)?.title, (live.seo as { title?: string } | null)?.title, { kind: "product", field: "seo" });
+  }
+
+  // Variants → one change per changed subfield. Single-variant products drop the
+  // "· Default Title" suffix so a price change reads simply as "Price".
+  const bVars = variantNodes(backup.variants);
+  const lVars = variantNodes(live.variants);
+  const multi = bVars.length > 1 || lVars.length > 1;
+  const VFIELDS: Array<[string, string]> = [
+    ["price", "Price"],
+    ["compareAtPrice", "Compare-at price"],
+    ["sku", "SKU"],
+    ["barcode", "Barcode"],
+    ["taxable", "Taxable"],
+  ];
+  for (const lv of lVars) {
+    const bv = bVars.find((b) => b.id === lv.id);
+    if (!bv) continue; // added variant — structural, not a field-level revert
+    const suffix = multi ? ` · ${(lv.title as string) || "variant"}` : "";
+    for (const [field, flabel] of VFIELDS) {
+      if (JSON.stringify(bv[field]) !== JSON.stringify(lv[field])) {
+        push(
+          `variant:${lv.id}:${field}`,
+          `${flabel}${suffix}`,
+          bv[field],
+          lv[field],
+          { kind: "variant", variantId: lv.id as string, field },
+        );
+      }
+    }
+  }
+
+  if (imageSignature(backup.images) !== imageSignature(live.images)) {
+    push("images", "Images", `${variantNodes(backup.images).length} images`, `${variantNodes(live.images).length} images`, { kind: "product", field: "images" });
+  }
+
+  return changes;
+}
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session, cors } = await authenticate.admin(request);
   const url = new URL(request.url);
@@ -477,7 +614,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         });
       }
     }
-    const changed = changedFields.length > 0;
+    // Granular, independently-revertable changes (drives the per-change Undo UI).
+    // `changed` is derived from these, so the false-positive category case (a
+    // missing category vs the "Uncategorized" sentinel) no longer shows the block.
+    const changes = buildChanges(backupData, liveProduct);
+    const changed = changes.length > 0;
 
     return cors(
       json({
@@ -486,6 +627,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         backupItemId: latestBackupItem.id,
         lastBackedUp: latestBackupItem.backup.createdAt.toISOString(),
         changedFields,
+        changes,
         timeline,
       }),
     );

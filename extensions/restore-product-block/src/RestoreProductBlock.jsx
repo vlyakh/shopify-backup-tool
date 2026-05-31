@@ -5,198 +5,146 @@ import {
   AdminBlock,
   BlockStack,
   InlineStack,
-  Section,
   Text,
   Button,
   Badge,
   Divider,
 } from "@shopify/ui-extensions-react/admin";
 
-const MAX_FIELDS = 6;
-const MAX_EVENTS = 8;
-
-function formatDate(dateString) {
-  return new Date(dateString).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-// Render groups for the popup. Lead with what's actually DIFFERENT from the
-// backup right now (with before→after values — this is exactly what Revert will
-// undo), then the ChangeLog history of WHEN each change happened (field names).
-function buildGroups(diff) {
-  const groups = [];
-  if (diff.changedFields && diff.changedFields.length) {
-    groups.push({
-      id: "current",
-      heading: "Changed since last backup",
-      action: "UPDATED",
-      fields: diff.changedFields.map((c) => ({
-        field: c.field,
-        label: c.label,
-        summary: c.summary,
-      })),
-    });
-  }
-  if (diff.timeline && diff.timeline.length) {
-    for (const event of diff.timeline) groups.push(event);
-  }
-  return groups;
-}
-
-// One newest-first timeline of change events: a timestamp header per event, the
-// action as a badge, then each changed field as a labelled badge + readable
-// summary. Never renders raw JSON. Shared shape across both product popups.
-function ChangeTimeline({ groups }) {
-  return (
-    <BlockStack gap="base">
-      {groups.slice(0, MAX_EVENTS).map((event) => (
-        <Section
-          key={event.id}
-          heading={
-            event.heading ||
-            (event.changedAt ? formatDate(event.changedAt) : "Recent changes")
-          }
-        >
-          <BlockStack gap="small">
-            {event.fields && event.fields.length ? (
-              event.fields.slice(0, MAX_FIELDS).map((f) => (
-                <InlineStack key={f.field} gap="small" blockAlignment="baseline">
-                  <Badge size="small-100">{f.label || f.field}</Badge>
-                  {f.summary ? <Text>{f.summary}</Text> : null}
-                </InlineStack>
-              ))
-            ) : (
-              <Text fontStyle="italic">No field-level detail recorded</Text>
-            )}
-            {event.fields && event.fields.length > MAX_FIELDS ? (
-              <Text>+{event.fields.length - MAX_FIELDS} more fields</Text>
-            ) : null}
-          </BlockStack>
-        </Section>
-      ))}
-      {groups.length > MAX_EVENTS ? (
-        <Text>+{groups.length - MAX_EVENTS} earlier changes</Text>
-      ) : null}
-    </BlockStack>
-  );
-}
-
+/**
+ * "Undo recent changes" block. Lists each change since the last backup as its own
+ * revertable row (Title, Price, …) with before → after, so the merchant can undo
+ * one change and keep the rest. Reverting refetches the diff, so the reverted row
+ * drops off; when nothing is left the block hides itself.
+ */
 function RestoreProductBlock() {
   const { data } = useApi();
   const productId = data.selected?.[0]?.id;
 
   const [diff, setDiff] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [reverting, setReverting] = useState(false);
-  const [done, setDone] = useState(null);
-  const [error, setError] = useState(null);
+  const [pending, setPending] = useState({});
+  const [errors, setErrors] = useState({});
+  const [allPending, setAllPending] = useState(false);
+
+  async function loadDiff() {
+    try {
+      const response = await fetch(
+        `/api/product-diff?resourceId=${encodeURIComponent(productId)}`,
+      );
+      if (response.ok) {
+        setDiff(await response.json());
+      }
+    } catch (err) {
+      console.error("Failed to fetch product diff:", err);
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
     if (!productId) {
       setLoading(false);
       return;
     }
-
-    async function fetchDiff() {
-      try {
-        // GET diff for the current product. No extra headers needed.
-        const response = await fetch(
-          `/api/product-diff?resourceId=${encodeURIComponent(productId)}`,
-        );
-        if (response.ok) {
-          setDiff(await response.json());
-        }
-      } catch (err) {
-        console.error("Failed to fetch product diff:", err);
-      } finally {
-        setLoading(false);
-      }
-    }
-
-    fetchDiff();
+    loadDiff();
   }, [productId]);
 
-  async function handleRevert() {
-    if (!diff?.backupItemId) return;
-    setReverting(true);
-    setError(null);
+  // Revert a single change back to the backup. No Content-Type header: the
+  // session-token Authorization header already preflights this cross-origin POST.
+  async function revertChange(change) {
+    setPending((p) => ({ ...p, [change.id]: true }));
+    setErrors((p) => ({ ...p, [change.id]: null }));
     try {
-      // Admin extensions attach a session-token Authorization header, so this
-      // cross-origin POST is always preflighted (OPTIONS) regardless of body.
-      // The route's loader answers that preflight — see api.revert-product.tsx.
-      // Content-Type is left unset (body stays text/plain) only to keep the
-      // preflight's requested headers minimal; request.json() still parses it.
+      const response = await fetch("/api/revert-product-field", {
+        method: "POST",
+        body: JSON.stringify({
+          backupItemId: diff.backupItemId,
+          target: change.target,
+        }),
+      });
+      const result = await response.json();
+      if (response.ok && result.success) {
+        await loadDiff(); // reverted change now matches backup → drops off the list
+      } else {
+        setErrors((p) => ({
+          ...p,
+          [change.id]: result.error || "Revert failed",
+        }));
+      }
+    } catch (err) {
+      setErrors((p) => ({ ...p, [change.id]: "Network error" }));
+    } finally {
+      setPending((p) => ({ ...p, [change.id]: false }));
+    }
+  }
+
+  async function revertAll() {
+    if (!diff?.backupItemId) return;
+    setAllPending(true);
+    try {
       const response = await fetch("/api/revert-product", {
         method: "POST",
         body: JSON.stringify({ backupItemId: diff.backupItemId }),
       });
       const result = await response.json();
       if (response.ok && result.success) {
-        const warns =
-          (result.variantWarnings?.length || 0) +
-          (result.mediaWarnings?.length || 0);
-        setDone(
-          warns
-            ? `Reverted (${warns} warning${warns !== 1 ? "s" : ""})`
-            : "Reverted to backup",
-        );
-      } else {
-        setError(result.error || "Revert failed");
+        await loadDiff();
       }
     } catch (err) {
-      setError("Network error");
+      console.error(err);
     } finally {
-      setReverting(false);
+      setAllPending(false);
     }
   }
 
-  // A block that hasn't decided yet should not flash a card. Unlike the sibling
-  // Backup Status block, the undo card must stay invisible until we know there
-  // are changes, so render nothing while loading.
+  // Stay invisible until we know there are changes (no flashing card).
   if (loading) {
     return null;
   }
-
-  // Render the card ONLY when the live product actually differs from the backup.
-  // This covers no backup, deleted product, and the unchanged case (changed:false).
   if (!diff?.hasBackup || diff.changed !== true) {
     return null;
   }
 
-  const groups = buildGroups(diff);
+  const changes = diff.changes || [];
 
   return (
     <AdminBlock title="Undo recent changes">
       <BlockStack gap="base">
         <Text>
-          This product changed since your last backup
-          {diff.lastBackedUp ? ` (${formatDate(diff.lastBackedUp)})` : ""}.
+          Changes since your last backup. Revert any one on its own — the rest
+          stay until you revert them.
         </Text>
-        <Text fontStyle="italic">
-          Reverting restores fields, variants and images to the backup.
-        </Text>
-
         <Divider />
-
-        <ChangeTimeline groups={groups} />
-
-        <Divider />
-
-        {done ? (
-          <Badge tone="success">{done}</Badge>
-        ) : (
-          <BlockStack gap="small">
-            <Button onPress={handleRevert} disabled={reverting || !!done}>
-              {reverting ? "Reverting…" : "Revert to backup"}
-            </Button>
-            {error ? <Badge tone="critical">{error}</Badge> : null}
+        {changes.map((change) => (
+          <BlockStack key={change.id} gap="small">
+            <InlineStack
+              inlineAlignment="space-between"
+              blockAlignment="center"
+              gap="base"
+            >
+              <BlockStack gap="none">
+                <Text fontWeight="bold">{change.label}</Text>
+                <Text>
+                  {change.before} {"→"} {change.after}
+                </Text>
+              </BlockStack>
+              <Button
+                onPress={() => revertChange(change)}
+                disabled={pending[change.id]}
+              >
+                {pending[change.id] ? "Reverting…" : "Revert"}
+              </Button>
+            </InlineStack>
+            {errors[change.id] ? (
+              <Badge tone="critical">{errors[change.id]}</Badge>
+            ) : null}
           </BlockStack>
-        )}
+        ))}
+        <Divider />
+        <Button onPress={revertAll} disabled={allPending}>
+          {allPending ? "Reverting all…" : "Revert all to backup"}
+        </Button>
       </BlockStack>
     </AdminBlock>
   );
