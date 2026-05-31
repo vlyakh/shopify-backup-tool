@@ -19,14 +19,18 @@ import {
   Button,
   Banner,
   Badge,
+  Checkbox,
+  Select,
   DataTable,
   EmptyState,
   Spinner,
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
+import type { BackupInterval } from "@prisma/client";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { runBackup } from "../services/backup.server";
+import { computeInitialNextRunAt } from "../services/scheduler.server";
 import type { loader as changedProductsLoader } from "./api.changed-products";
 import type { loader as deletedProductsLoader } from "./api.deleted-products";
 
@@ -54,10 +58,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const totalBackups = await prisma.backup.count({ where: { storeId: shop } });
   const lastBackup = backups[0] || null;
+  const schedule = await prisma.backupSchedule.findUnique({
+    where: { storeId: shop },
+  });
 
   return json({
     shop,
     store,
+    schedule: schedule
+      ? {
+          enabled: schedule.enabled,
+          interval: schedule.interval,
+          nextRunAt: schedule.nextRunAt?.toISOString() ?? null,
+        }
+      : null,
     backups: backups.map((b) => ({
       id: b.id,
       status: b.status,
@@ -102,6 +116,26 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         error: error instanceof Error ? error.message : "Backup failed",
       });
     }
+  }
+
+  if (actionType === "saveSchedule") {
+    const enabled = formData.get("enabled") === "true";
+    const interval = (formData.get("interval") as BackupInterval) || "DAILY";
+    const storeRec = await prisma.store.findUnique({ where: { id: shop } });
+    await prisma.store.update({
+      where: { id: shop },
+      data: { autoBackupEnabled: enabled },
+    });
+    // null nextRunAt while disabled; recompute the next slot when enabling.
+    const nextRunAt = enabled
+      ? computeInitialNextRunAt(storeRec?.autoBackupHour ?? 3, interval)
+      : null;
+    await prisma.backupSchedule.upsert({
+      where: { storeId: shop },
+      create: { storeId: shop, enabled, interval, nextRunAt },
+      update: { enabled, interval, nextRunAt },
+    });
+    return json({ success: true, scheduleSaved: true });
   }
 
   return json({ success: false, error: "Unknown action" });
@@ -435,8 +469,77 @@ function RecoverDeleted() {
   );
 }
 
+/**
+ * "Automatic backups" card. Toggles Store.autoBackupEnabled + the store's
+ * BackupSchedule (interval) via the saveSchedule action. The scheduler
+ * (scheduler.server.ts cron) picks it up.
+ */
+function ScheduleCard({
+  initialEnabled,
+  initialInterval,
+  nextRunAt,
+}: {
+  initialEnabled: boolean;
+  initialInterval: string;
+  nextRunAt: string | null;
+}) {
+  const fetcher = useFetcher<{ scheduleSaved?: boolean }>();
+  const [enabled, setEnabled] = useState(initialEnabled);
+  const [interval, setIntervalValue] = useState(initialInterval);
+  const saving = fetcher.state !== "idle";
+  const saved = fetcher.data?.scheduleSaved;
+
+  const save = () => {
+    fetcher.submit(
+      { action: "saveSchedule", enabled: String(enabled), interval },
+      { method: "POST" },
+    );
+  };
+
+  return (
+    <Card>
+      <BlockStack gap="400">
+        <BlockStack gap="100">
+          <Text as="h2" variant="headingMd">
+            Automatic backups
+          </Text>
+          <Text as="p" variant="bodySm" tone="subdued">
+            {initialEnabled && nextRunAt
+              ? `Next backup ${formatDate(nextRunAt)}.`
+              : "Run a backup automatically on a schedule."}
+          </Text>
+        </BlockStack>
+        <Checkbox
+          label="Enable automatic backups"
+          checked={enabled}
+          onChange={setEnabled}
+        />
+        <InlineStack gap="300" blockAlign="end">
+          <Select
+            label="Frequency"
+            options={[
+              { label: "Every 6 hours", value: "EVERY_6H" },
+              { label: "Every 12 hours", value: "EVERY_12H" },
+              { label: "Daily", value: "DAILY" },
+              { label: "Weekly", value: "WEEKLY" },
+            ]}
+            value={interval}
+            onChange={setIntervalValue}
+            disabled={!enabled}
+          />
+          <Button onClick={save} loading={saving} variant="primary">
+            Save
+          </Button>
+          {saved ? <Badge tone="success">Saved</Badge> : null}
+        </InlineStack>
+      </BlockStack>
+    </Card>
+  );
+}
+
 export default function Index() {
-  const { store, backups, totalBackups, lastBackup } = useLoaderData<typeof loader>();
+  const { store, backups, totalBackups, lastBackup, schedule } =
+    useLoaderData<typeof loader>();
   const submit = useSubmit();
   const navigation = useNavigation();
   const navigate = useNavigate();
@@ -587,6 +690,13 @@ export default function Index() {
             </Button>
           </InlineStack>
         </Card>
+
+        {/* Automatic backup schedule */}
+        <ScheduleCard
+          initialEnabled={store?.autoBackupEnabled ?? false}
+          initialInterval={schedule?.interval ?? "DAILY"}
+          nextRunAt={schedule?.nextRunAt ?? null}
+        />
 
         {/* Backup History */}
         <Card>
