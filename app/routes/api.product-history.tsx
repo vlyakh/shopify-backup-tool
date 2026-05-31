@@ -53,7 +53,7 @@ const VARIANT_FIELDS: Array<[string, string]> = [
   ["sku", "SKU"],
 ];
 
-function clip(v: unknown, n = 40): string {
+function clip(v: unknown, n = 28): string {
   if (v === null || v === undefined || v === "") return "—";
   const s = String(v);
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
