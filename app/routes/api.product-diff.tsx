@@ -456,10 +456,22 @@ function buildChanges(
     ["barcode", "Barcode"],
     ["taxable", "Taxable"],
   ];
+  // Identify a variant by its option(s) WITH the option name ("Denomination: $10")
+  // so a value like "$10" isn't mistaken for a price. Falls back to the variant
+  // title, then "variant".
+  const variantDesc = (v: Record<string, unknown>): string => {
+    const opts = v.selectedOptions;
+    if (Array.isArray(opts) && opts.length) {
+      return (opts as Array<{ name?: string; value?: string }>)
+        .map((o) => `${o.name}: ${o.value}`)
+        .join(", ");
+    }
+    return (v.title as string) || "variant";
+  };
   for (const lv of lVars) {
     const bv = bVars.find((b) => b.id === lv.id);
     if (!bv) continue; // added variant — structural, not a field-level revert
-    const suffix = multi ? ` · ${(lv.title as string) || "variant"}` : "";
+    const suffix = multi ? ` · ${variantDesc(lv)}` : "";
     for (const [field, flabel] of VFIELDS) {
       if (JSON.stringify(bv[field]) !== JSON.stringify(lv[field])) {
         push(
