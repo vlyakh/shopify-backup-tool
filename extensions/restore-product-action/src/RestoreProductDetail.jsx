@@ -12,79 +12,81 @@ import {
   ProgressIndicator,
 } from "@shopify/ui-extensions-react/admin";
 
+function formatDate(s) {
+  return new Date(s).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 /**
- * "Restore from Backup" action. Same per-change Undo as the block: each change
- * since the last backup is its own revertable row (revert one, keep the rest).
+ * "Restore from Backup" action — the same change history as the block: each edit
+ * since the last backup, with "Undo this edit" (set the field back to its value
+ * just before that change).
  */
 function RestoreProductDetail() {
   const { close, data } = useApi();
   const productId = data?.selected?.[0]?.id;
 
   const [loading, setLoading] = useState(true);
-  const [diff, setDiff] = useState(null);
+  const [hist, setHist] = useState(null);
   const [pending, setPending] = useState({});
+  const [done, setDone] = useState({});
   const [errors, setErrors] = useState({});
   const [allPending, setAllPending] = useState(false);
 
-  async function loadDiff() {
+  async function load() {
     try {
-      const response = await fetch(
-        `/api/product-diff?resourceId=${encodeURIComponent(productId)}`,
+      const r = await fetch(
+        `/api/product-history?resourceId=${encodeURIComponent(productId)}`,
       );
-      if (response.ok) {
-        setDiff(await response.json());
-      }
+      if (r.ok) setHist(await r.json());
     } catch (err) {
-      console.error("Failed to fetch product diff:", err);
+      console.error("Failed to load history:", err);
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    if (productId) loadDiff();
+    if (productId) load();
     else setLoading(false);
   }, [productId]);
 
-  async function revertChange(change) {
-    setPending((p) => ({ ...p, [change.id]: true }));
-    setErrors((p) => ({ ...p, [change.id]: null }));
+  async function undo(row) {
+    const key = `${row.changeId}:${row.field}`;
+    setPending((p) => ({ ...p, [key]: true }));
+    setErrors((p) => ({ ...p, [key]: null }));
     try {
-      const response = await fetch("/api/revert-product-field", {
+      const r = await fetch("/api/revert-product-field", {
         method: "POST",
-        body: JSON.stringify({
-          backupItemId: diff.backupItemId,
-          target: change.target,
-        }),
+        body: JSON.stringify({ changeId: row.changeId, field: row.field }),
       });
-      const result = await response.json();
-      if (response.ok && result.success) {
-        await loadDiff();
+      const result = await r.json();
+      if (r.ok && result.success) {
+        setDone((p) => ({ ...p, [key]: true }));
       } else {
-        setErrors((p) => ({
-          ...p,
-          [change.id]: result.error || "Revert failed",
-        }));
+        setErrors((p) => ({ ...p, [key]: result.error || "Undo failed" }));
       }
     } catch (err) {
-      setErrors((p) => ({ ...p, [change.id]: "Network error" }));
+      setErrors((p) => ({ ...p, [key]: "Network error" }));
     } finally {
-      setPending((p) => ({ ...p, [change.id]: false }));
+      setPending((p) => ({ ...p, [key]: false }));
     }
   }
 
   async function revertAll() {
-    if (!diff?.backupItemId) return;
+    if (!hist?.backupItemId) return;
     setAllPending(true);
     try {
-      const response = await fetch("/api/revert-product", {
+      const r = await fetch("/api/revert-product", {
         method: "POST",
-        body: JSON.stringify({ backupItemId: diff.backupItemId }),
+        body: JSON.stringify({ backupItemId: hist.backupItemId }),
       });
-      const result = await response.json();
-      if (response.ok && result.success) {
-        await loadDiff();
-      }
+      const result = await r.json();
+      if (r.ok && result.success) await load();
     } catch (err) {
       console.error(err);
     } finally {
@@ -97,13 +99,13 @@ function RestoreProductDetail() {
       <AdminAction title="Restore from Backup">
         <BlockStack gap="base">
           <ProgressIndicator size="small" />
-          <Text>Checking backups…</Text>
+          <Text>Checking history…</Text>
         </BlockStack>
       </AdminAction>
     );
   }
 
-  if (!diff?.hasBackup) {
+  if (!hist?.hasBackup) {
     return (
       <AdminAction
         title="Restore from Backup"
@@ -117,14 +119,14 @@ function RestoreProductDetail() {
     );
   }
 
-  const changes = diff.changes || [];
-  if (!changes.length) {
+  const rows = hist.rows || [];
+  if (rows.length === 0) {
     return (
       <AdminAction
         title="Restore from Backup"
         secondaryAction={<Button onPress={close}>Close</Button>}
       >
-        <Text>This product matches your last backup — nothing to restore.</Text>
+        <Text>No changes since your last backup.</Text>
       </AdminAction>
     );
   }
@@ -141,37 +143,40 @@ function RestoreProductDetail() {
     >
       <BlockStack gap="base">
         <Text>
-          Changes since your last backup. Revert any one on its own — the rest
-          stay until you revert them.
+          Every change since your last backup. Undo any one on its own — others
+          stay.
         </Text>
         <Divider />
-        {changes.map((change) => (
-          <BlockStack key={change.id} gap="small">
-            <InlineStack
-              inlineAlignment="space-between"
-              blockAlignment="center"
-              gap="base"
-            >
-              <BlockStack gap="none">
-                <InlineStack gap="none">
-                  <Badge>{change.label}</Badge>
-                </InlineStack>
-                <Text>
-                  {change.before} {"→"} {change.after}
-                </Text>
-              </BlockStack>
-              <Button
-                onPress={() => revertChange(change)}
-                disabled={pending[change.id]}
+        {rows.map((row, i) => {
+          const key = `${row.changeId}:${row.field}`;
+          return (
+            <BlockStack key={`${key}:${i}`} gap="small">
+              <Text fontStyle="italic">{formatDate(row.changedAt)}</Text>
+              <InlineStack
+                inlineAlignment="space-between"
+                blockAlignment="center"
+                gap="base"
               >
-                {pending[change.id] ? "Reverting…" : "Revert"}
-              </Button>
-            </InlineStack>
-            {errors[change.id] ? (
-              <Badge tone="critical">{errors[change.id]}</Badge>
-            ) : null}
-          </BlockStack>
-        ))}
+                <BlockStack gap="none">
+                  <InlineStack gap="none">
+                    <Badge>{row.label}</Badge>
+                  </InlineStack>
+                  <Text>
+                    {row.before} {"→"} {row.after}
+                  </Text>
+                </BlockStack>
+                {done[key] ? (
+                  <Badge tone="success">Undone</Badge>
+                ) : row.revertable ? (
+                  <Button onPress={() => undo(row)} disabled={pending[key]}>
+                    {pending[key] ? "Undoing…" : "Undo"}
+                  </Button>
+                ) : null}
+              </InlineStack>
+              {errors[key] ? <Badge tone="critical">{errors[key]}</Badge> : null}
+            </BlockStack>
+          );
+        })}
       </BlockStack>
     </AdminAction>
   );
