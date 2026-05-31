@@ -27,6 +27,7 @@ import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { runBackup } from "../services/backup.server";
 import type { loader as changedProductsLoader } from "./api.changed-products";
+import type { loader as deletedProductsLoader } from "./api.deleted-products";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -302,6 +303,137 @@ function RestoreChanges() {
   );
 }
 
+type DeletedProduct = {
+  backupItemId: string;
+  title: string;
+  deletedAt: string;
+  variantCount: number;
+};
+
+/**
+ * "Recover deleted products" card. Lists products that were backed up but have
+ * since been deleted (via GET /api/deleted-products) and lets the merchant
+ * re-create any as a new draft (POST /api/restore-product). Mirrors the
+ * RestoreChanges card. Deleted products can't be reached from their own product
+ * page, so recovery must live here on the dashboard list.
+ */
+function RecoverDeleted() {
+  const fetcher = useFetcher<typeof deletedProductsLoader>();
+  const [pending, setPending] = useState<Record<string, boolean>>({});
+  const [done, setDone] = useState<Record<string, string>>({});
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (fetcher.state === "idle" && !fetcher.data) {
+      fetcher.load("/api/deleted-products");
+    }
+  }, [fetcher]);
+
+  const products = (fetcher.data?.products ?? []) as DeletedProduct[];
+  const isLoading = fetcher.state !== "idle" && !fetcher.data;
+
+  async function handleRecover(backupItemId: string) {
+    setPending((prev) => ({ ...prev, [backupItemId]: true }));
+    setErrors((prev) => ({ ...prev, [backupItemId]: "" }));
+    try {
+      const response = await fetch("/api/restore-product", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ backupItemId }),
+      });
+      const result = await response.json();
+      if (response.ok && result.success) {
+        // Recreated as a new draft; the old deleted entry stays in the list
+        // (historical), so show a success badge rather than refreshing it away.
+        setDone((prev) => ({ ...prev, [backupItemId]: "Recovered as draft" }));
+      } else {
+        setErrors((prev) => ({
+          ...prev,
+          [backupItemId]: result.error || "Recover failed",
+        }));
+      }
+    } catch {
+      setErrors((prev) => ({ ...prev, [backupItemId]: "Network error" }));
+    } finally {
+      setPending((prev) => ({ ...prev, [backupItemId]: false }));
+    }
+  }
+
+  let body;
+  if (isLoading) {
+    body = (
+      <InlineStack gap="200" blockAlign="center">
+        <Spinner size="small" accessibilityLabel="Loading deleted products" />
+        <Text as="p" variant="bodySm" tone="subdued">
+          Checking for deleted products…
+        </Text>
+      </InlineStack>
+    );
+  } else if (products.length === 0) {
+    body = (
+      <Text as="p" variant="bodySm" tone="subdued">
+        No deleted products to recover.
+      </Text>
+    );
+  } else {
+    const rows = products.map((item) => [
+      item.title || "Unknown product",
+      formatDate(item.deletedAt),
+      done[item.backupItemId] ? (
+        <Badge key={`d-${item.backupItemId}`} tone="success">
+          {done[item.backupItemId]}
+        </Badge>
+      ) : errors[item.backupItemId] ? (
+        <InlineStack key={`e-${item.backupItemId}`} gap="200" blockAlign="center">
+          <Badge tone="critical">Failed</Badge>
+          <Button
+            size="slim"
+            onClick={() => handleRecover(item.backupItemId)}
+            loading={pending[item.backupItemId]}
+          >
+            Retry
+          </Button>
+        </InlineStack>
+      ) : (
+        <Button
+          key={`b-${item.backupItemId}`}
+          size="slim"
+          onClick={() => handleRecover(item.backupItemId)}
+          loading={pending[item.backupItemId]}
+          disabled={pending[item.backupItemId]}
+        >
+          Recover
+        </Button>
+      ),
+    ]);
+
+    body = (
+      <DataTable
+        columnContentTypes={["text", "text", "text"]}
+        headings={["Product", "Deleted", ""]}
+        rows={rows}
+      />
+    );
+  }
+
+  return (
+    <Card>
+      <BlockStack gap="400">
+        <BlockStack gap="100">
+          <Text as="h2" variant="headingMd">
+            Recover deleted products
+          </Text>
+          <Text as="p" variant="bodySm" tone="subdued">
+            Products that were backed up but have since been deleted. Recover any
+            as a new draft.
+          </Text>
+        </BlockStack>
+        {body}
+      </BlockStack>
+    </Card>
+  );
+}
+
 export default function Index() {
   const { store, backups, totalBackups, lastBackup } = useLoaderData<typeof loader>();
   const submit = useSubmit();
@@ -468,6 +600,9 @@ export default function Index() {
 
         {/* Restore changes */}
         <RestoreChanges />
+
+        {/* Recover deleted products */}
+        <RecoverDeleted />
 
         {/* Plan Upgrade Banner */}
         {store?.plan === "FREE" && (
