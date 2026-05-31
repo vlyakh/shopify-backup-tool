@@ -1,8 +1,23 @@
-import type { ActionFunctionArgs } from "@remix-run/node";
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { storage } from "../services/storage.server";
+
+/**
+ * CORS preflight handler. Admin UI extensions are served cross-origin from
+ * extensions.shopifycdn.com and send an Authorization: Bearer session token,
+ * so every call here is preceded by a CORS preflight (OPTIONS). Remix routes
+ * OPTIONS to the *loader* — and a route with only an `action` answers it with
+ * a bare 400 that has no Access-Control-* headers, so the preflight fails and
+ * the POST never fires. authenticate.admin short-circuits OPTIONS with a 204 +
+ * the right CORS headers (before any token check), so simply running it here
+ * makes the preflight pass. A real GET isn't a use of this endpoint → 405.
+ */
+export const loader = async ({ request }: LoaderFunctionArgs) => {
+  const { cors } = await authenticate.admin(request);
+  return cors(json({ error: "Method not allowed" }, { status: 405 }));
+};
 
 const PRODUCT_UPDATE_MUTATION = `#graphql
   mutation productUpdate($product: ProductUpdateInput!) {

@@ -52,9 +52,11 @@ function RestoreChangedAction() {
     setErrors((prev) => ({ ...prev, [backupItemId]: null }));
 
     try {
-      // No Content-Type header on purpose: application/json would trigger a
-      // CORS preflight (OPTIONS) that the Remix action doesn't answer. A plain
-      // body is a "simple" request; request.json() still parses it server-side.
+      // Admin extensions attach a session-token Authorization header, so this
+      // cross-origin POST is always preflighted (OPTIONS) regardless of body.
+      // The route's loader answers that preflight — see api.revert-product.tsx.
+      // Content-Type is left unset (body stays text/plain) only to keep the
+      // preflight's requested headers minimal; request.json() still parses it.
       const response = await fetch("/api/revert-product", {
         method: "POST",
         body: JSON.stringify({ backupItemId }),
