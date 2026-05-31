@@ -157,6 +157,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             | undefined;
 
           const inventoryItem: Record<string, unknown> = {};
+          // sku moved onto InventoryItemInput in 2026-04 — it is NOT a field on
+          // ProductVariantsBulkInput, so productVariantsBulkUpdate rejects a
+          // top-level sku ("Field is not defined on ProductVariantsBulkInput").
+          if (v.sku !== undefined && v.sku !== null) inventoryItem.sku = v.sku;
           if (inv?.tracked !== undefined) inventoryItem.tracked = inv.tracked;
           if (inv?.requiresShipping !== undefined)
             inventoryItem.requiresShipping = inv.requiresShipping;
@@ -171,7 +175,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
           return {
             id: v.id,
-            sku: v.sku,
             barcode: v.barcode,
             price: v.price,
             compareAtPrice: v.compareAtPrice,
