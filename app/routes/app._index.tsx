@@ -5,6 +5,7 @@ import {
   useLoaderData,
   useSubmit,
   useNavigation,
+  useNavigate,
   useRevalidator,
   useFetcher,
 } from "@remix-run/react";
@@ -438,6 +439,7 @@ export default function Index() {
   const { store, backups, totalBackups, lastBackup } = useLoaderData<typeof loader>();
   const submit = useSubmit();
   const navigation = useNavigation();
+  const navigate = useNavigate();
   const { revalidate } = useRevalidator();
 
   // A backup currently running (e.g. the automatic one kicked off at install).
@@ -477,6 +479,17 @@ export default function Index() {
       .filter(Boolean)
       .join(", ") || "Empty",
     String(backup.itemCount),
+    backup.status === "COMPLETED" ? (
+      <Button
+        key={`r-${backup.id}`}
+        size="slim"
+        onClick={() => navigate(`/app/backups/${backup.id}`)}
+      >
+        Restore
+      </Button>
+    ) : (
+      ""
+    ),
   ]);
 
   return (
@@ -590,8 +603,15 @@ export default function Index() {
               </EmptyState>
             ) : (
               <DataTable
-                columnContentTypes={["text", "text", "text", "text", "numeric"]}
-                headings={["Date", "Status", "Trigger", "Contents", "Items"]}
+                columnContentTypes={[
+                  "text",
+                  "text",
+                  "text",
+                  "text",
+                  "numeric",
+                  "text",
+                ]}
+                headings={["Date", "Status", "Trigger", "Contents", "Items", ""]}
                 rows={rows}
               />
             )}
