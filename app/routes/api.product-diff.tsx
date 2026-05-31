@@ -3,6 +3,8 @@ import { json } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { storage } from "../services/storage.server";
+import { getChangeHistory } from "../services/changelog.server";
+import { imageSignature } from "../services/image-signature.server";
 
 /**
  * API endpoint for the product diff / undo UX (Undo block + Restore action).
@@ -18,8 +20,13 @@ import { storage } from "../services/storage.server";
  *     deleted?: boolean,         // present + true only when the live product no longer exists
  *     backupItemId: string|null, // BackupItem.id to POST to /api/revert-product
  *     lastBackedUp: string|null, // ISO timestamp of the backup's createdAt
- *     changedFields: Array<{ field: string; before: string; after: string }>
- *                                // before/after stringified + truncated to <= 80 chars (trailing "…")
+ *     changedFields: Array<{ field, before, after, label, summary }>
+ *                                // CURRENT snapshot delta (live vs latest backup).
+ *                                // before/after: legacy stringified+truncated values (kept for compat).
+ *                                // label: human field name; summary: one readable line (NOT JSON).
+ *     timeline: Array<{ id, changedAt, action, fields: Array<{ field, label }> }>
+ *                                // ChangeLog history, NEWEST FIRST — the source of "when".
+ *                                // Empty on stores without webhooks (popups fall back to changedFields).
  *   }
  */
 
@@ -132,6 +139,119 @@ function short(value: unknown): string {
   return s.length > TRUNCATE ? s.slice(0, TRUNCATE - 1) + "…" : s;
 }
 
+// Human-readable display label per top-level field. Used by both the snapshot
+// diff and the ChangeLog timeline so the popups never render raw field keys.
+const FIELD_LABELS: Record<string, string> = {
+  // GraphQL keys (the snapshot-diff side, camelCase).
+  title: "Title",
+  handle: "Handle",
+  descriptionHtml: "Description",
+  productType: "Product type",
+  vendor: "Vendor",
+  tags: "Tags",
+  status: "Status",
+  templateSuffix: "Template",
+  category: "Category",
+  options: "Options",
+  variants: "Variants",
+  images: "Images",
+  metafields: "Metafields",
+  seo: "SEO",
+  // REST/webhook keys (the ChangeLog timeline side, snake_case) — ChangeLog stores
+  // the raw product webhook payload keys, which differ from the GraphQL names.
+  body_html: "Description",
+  product_type: "Product type",
+  template_suffix: "Template",
+  image: "Images",
+  published_at: "Published",
+};
+
+// Timestamp / identity keys that bump on essentially every product webhook and
+// would otherwise render as noise badges ("Updated_at") in the timeline.
+const TIMELINE_NOISE_KEYS = new Set([
+  "updated_at",
+  "created_at",
+  "admin_graphql_api_id",
+  "id",
+]);
+
+function prettyLabel(field: string): string {
+  if (FIELD_LABELS[field]) return FIELD_LABELS[field];
+  // Title-case an unknown (usually snake_case) key: body_html -> "Body Html".
+  const out = field
+    .split("_")
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+  return out || field;
+}
+
+// Count items in a connection ({ nodes: [...] }) or a plain array; null otherwise.
+function nodeCount(value: unknown): number | null {
+  if (Array.isArray(value)) return value.length;
+  if (
+    value &&
+    typeof value === "object" &&
+    Array.isArray((value as { nodes?: unknown[] }).nodes)
+  ) {
+    return (value as { nodes: unknown[] }).nodes.length;
+  }
+  return null;
+}
+
+/**
+ * Build a ONE-LINE human summary of a field change. This replaces the old
+ * before/after JSON.stringify (which dumped `{"nodes":[...]}` for variants,
+ * images, etc.) — never stringify a complex object into the UI.
+ */
+function summarizeField(field: string, before: unknown, after: unknown): string {
+  switch (field) {
+    case "variants":
+    case "images":
+    case "metafields": {
+      const b = nodeCount(before);
+      const a = nodeCount(after);
+      if (b !== null && a !== null && b !== a) {
+        const delta = a - b;
+        return `${b} → ${a} ${field} (${Math.abs(delta)} ${delta > 0 ? "added" : "removed"})`;
+      }
+      const n = a ?? b;
+      return n !== null ? `${n} ${field}` : `${prettyLabel(field)} updated`;
+    }
+    case "options": {
+      const opts = Array.isArray(after)
+        ? (after as Array<{ name?: string; values?: unknown[] }>)
+        : [];
+      return opts.length
+        ? opts
+            .map((o) => `${o.name ?? "?"} (${o.values?.length ?? 0} values)`)
+            .join(", ")
+        : "Options updated";
+    }
+    case "tags": {
+      const tags = Array.isArray(after) ? (after as string[]) : [];
+      if (!tags.length) return "Tags cleared";
+      const head = tags.slice(0, 3).join(", ");
+      return `Tags: ${head}${tags.length > 3 ? ` (+${tags.length - 3} more)` : ""}`;
+    }
+    case "category": {
+      const name = (after as { name?: string } | null)?.name;
+      return name ? `Category: ${name}` : "Category cleared";
+    }
+    case "seo":
+      return "SEO updated";
+    case "descriptionHtml":
+      return "Description updated";
+    default: {
+      // Scalar fields (title, handle, vendor, productType, status, templateSuffix).
+      const clip = (s: string) => (s.length > 40 ? s.slice(0, 39) + "…" : s);
+      const fmt = (v: unknown) =>
+        v === null || v === undefined || v === "" ? "—" : clip(String(v));
+      return `${fmt(before)} → ${fmt(after)}`;
+    }
+  }
+}
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session, cors } = await authenticate.admin(request);
   const url = new URL(request.url);
@@ -142,6 +262,27 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }
 
   try {
+    // Per-event change history for this product, NEWEST FIRST. This is the only
+    // source of WHEN each change happened — the snapshot diff below only knows the
+    // current delta vs the latest backup. changedFields here are top-level NAMES
+    // (a single variant edit surfaces as "variants"); it is [] for CREATED/DELETED
+    // events and empty on stores without webhooks (ChangeLog isn't written then),
+    // so the popups fall back to the snapshot diff when timeline is empty.
+    const history = await getChangeHistory(session.shop, "PRODUCT", resourceId);
+    const timeline = history
+      .map((row) => ({
+        id: row.id,
+        changedAt: row.changedAt.toISOString(),
+        action: row.action,
+        fields: (row.changedFields ?? [])
+          .filter((f) => !TIMELINE_NOISE_KEYS.has(f))
+          .map((f) => ({ field: f, label: prettyLabel(f) })),
+      }))
+      // Drop UPDATED events whose only changes were noise keys (e.g. an inventory
+      // sync that just bumped updated_at) — they'd render as an empty "Updated"
+      // row. CREATED/DELETED legitimately carry no field list, so keep those.
+      .filter((ev) => ev.action !== "UPDATED" || ev.fields.length > 0);
+
     // Find the most recent COMPLETED backup item for this resource
     const latestBackupItem = await prisma.backupItem.findFirst({
       where: {
@@ -201,6 +342,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           backupItemId: latestBackupItem.id,
           lastBackedUp: latestBackupItem.backup.createdAt.toISOString(),
           changedFields: [],
+          timeline,
         }),
       );
     }
@@ -209,12 +351,31 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // Caveat: `tags` may come back in a different array order between backup and live,
     // so this compare can flag it as changed even when the set is equal. Acceptable for
     // v1 — computeChangedFields in changelog.server.ts has the same limitation.
-    const changedFields: Array<{ field: string; before: string; after: string }> = [];
+    const changedFields: Array<{
+      field: string;
+      before: string;
+      after: string;
+      label: string;
+      summary: string;
+    }> = [];
     for (const field of DIFF_FIELDS) {
       const before = backupData[field];
       const after = liveProduct[field];
-      if (JSON.stringify(before) !== JSON.stringify(after)) {
-        changedFields.push({ field, before: short(before), after: short(after) });
+      // `images` is compared by a stable signature (filename + altText), NOT raw
+      // JSON: restoring images re-ingests them under new urls/ids, so a raw
+      // compare would report a just-reverted product as changed forever.
+      const differs =
+        field === "images"
+          ? imageSignature(before) !== imageSignature(after)
+          : JSON.stringify(before) !== JSON.stringify(after);
+      if (differs) {
+        changedFields.push({
+          field,
+          before: short(before),
+          after: short(after),
+          label: prettyLabel(field),
+          summary: summarizeField(field, before, after),
+        });
       }
     }
     const changed = changedFields.length > 0;
@@ -226,6 +387,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         backupItemId: latestBackupItem.id,
         lastBackedUp: latestBackupItem.backup.createdAt.toISOString(),
         changedFields,
+        timeline,
       }),
     );
   } catch (error) {

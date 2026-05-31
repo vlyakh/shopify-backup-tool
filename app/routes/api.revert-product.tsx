@@ -3,6 +3,7 @@ import { json } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { storage } from "../services/storage.server";
+import { imageSignature } from "../services/image-signature.server";
 
 /**
  * CORS preflight handler. Admin UI extensions are served cross-origin from
@@ -53,6 +54,62 @@ const VARIANTS_BULK_UPDATE_MUTATION = `#graphql
         sku
       }
       userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+// --- Media (image) restore ops, 2026-04 ---
+// There is no in-place "replace media" mutation (productUpdate.media only APPENDS),
+// so reverting images means reconciling: read the product's CURRENT media, delete
+// it, then re-create from the backed-up image URLs. The media `id` stored in the
+// backup is from backup time and is STALE, so deletion must use ids read live here.
+const PRODUCT_MEDIA_QUERY = `#graphql
+  query GetProductMedia($id: ID!) {
+    product(id: $id) {
+      media(first: 250) {
+        nodes {
+          id
+          mediaContentType
+          ... on MediaImage {
+            image {
+              altText
+              width
+              height
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+const PRODUCT_DELETE_MEDIA_MUTATION = `#graphql
+  mutation productDeleteMedia($productId: ID!, $mediaIds: [ID!]!) {
+    productDeleteMedia(productId: $productId, mediaIds: $mediaIds) {
+      deletedMediaIds
+      mediaUserErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+// CreateMediaInput uses `originalSource` + `mediaContentType` + `alt`. Note
+// `mediaContentType` (NOT `contentType`, which is the ProductSetInput.files
+// spelling). A cdn.shopify.com URL is a valid originalSource and re-ingests a copy.
+const PRODUCT_CREATE_MEDIA_MUTATION = `#graphql
+  mutation productCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
+    productCreateMedia(productId: $productId, media: $media) {
+      media {
+        id
+        status
+        mediaContentType
+      }
+      mediaUserErrors {
         field
         message
       }
@@ -206,6 +263,103 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }
     }
 
+    // Step 3: Restore product images (best-effort — must never block the
+    // title/variant revert above, so failures collect into mediaWarnings instead
+    // of throwing). Scope is IMAGE only (the backup captures the legacy `images`
+    // connection; video/3D media isn't backed up).
+    //
+    // Shopify has no in-place "replace media" mutation, so we reconcile against
+    // the CURRENT media (the backup's media ids/urls are stale). Two correctness
+    // details, both learned the hard way:
+    //  - Compare by a STABLE signature (dimensions + altText + order), NOT urls or
+    //    filenames: productCreateMedia re-ingests each image under a NEW url/id
+    //    AND a uniquified filename, so any url/name compare would read a just-
+    //    reverted product as "changed" forever and duplicate images every revert.
+    //  - CREATE first, then delete the old media only once the full backup set was
+    //    accepted — so a failed create never leaves the product imageless.
+    const mediaWarnings: string[] = [];
+    try {
+      const backupImages: Array<{
+        url?: string;
+        altText?: string | null;
+        width?: number | null;
+        height?: number | null;
+      }> = (data.images?.nodes ?? []).filter((img: { url?: string }) => img.url);
+
+      // Read the product's CURRENT image media (node ids to delete; dimensions +
+      // altText to compare against the backup).
+      const mediaResponse = await admin.graphql(PRODUCT_MEDIA_QUERY, {
+        variables: { id: productId },
+      });
+      const mediaResult = await mediaResponse.json();
+      const currentImages = (
+        (mediaResult.data?.product?.media?.nodes ?? []) as Array<{
+          id: string;
+          mediaContentType?: string;
+          image?: {
+            altText?: string | null;
+            width?: number | null;
+            height?: number | null;
+          };
+        }>
+      ).filter((n) => n.mediaContentType === "IMAGE");
+
+      const currentSignature = imageSignature(
+        currentImages.map((n) => n.image ?? {}),
+      );
+      const backupSignature = imageSignature(backupImages);
+
+      if (currentSignature !== backupSignature) {
+        // Create the backed-up images FIRST (this appends), then remove the old
+        // ones — so a create failure never leaves the product imageless.
+        let createdCount = 0;
+        if (backupImages.length > 0) {
+          const createResult = await (
+            await admin.graphql(PRODUCT_CREATE_MEDIA_MUTATION, {
+              variables: {
+                productId,
+                media: backupImages.map((img) => ({
+                  originalSource: img.url,
+                  alt: img.altText || "",
+                  mediaContentType: "IMAGE",
+                })),
+              },
+            })
+          ).json();
+          for (const e of (createResult.data?.productCreateMedia
+            ?.mediaUserErrors ?? []) as Array<{ message: string }>) {
+            mediaWarnings.push(`Image restore: ${e.message}`);
+          }
+          createdCount =
+            createResult.data?.productCreateMedia?.media?.length ?? 0;
+        }
+
+        // Remove the OLD images only when the whole backup set was created (or the
+        // backup had none → an intentionally empty gallery). On a partial/failed
+        // create, keep the originals so nothing is lost (may leave duplicates).
+        const fullyCreated = createdCount === backupImages.length;
+        if (fullyCreated && currentImages.length > 0) {
+          const deleteResult = await (
+            await admin.graphql(PRODUCT_DELETE_MEDIA_MUTATION, {
+              variables: { productId, mediaIds: currentImages.map((n) => n.id) },
+            })
+          ).json();
+          for (const e of (deleteResult.data?.productDeleteMedia
+            ?.mediaUserErrors ?? []) as Array<{ message: string }>) {
+            mediaWarnings.push(`Image delete: ${e.message}`);
+          }
+        } else if (!fullyCreated) {
+          mediaWarnings.push(
+            "Some images could not be restored from the backup; kept the product's existing images.",
+          );
+        }
+      }
+    } catch (mediaError) {
+      mediaWarnings.push(
+        mediaError instanceof Error ? mediaError.message : "Image restore failed",
+      );
+    }
+
     return cors(
       json({
         success: true,
@@ -213,6 +367,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         title: data.title,
         variantWarnings:
           variantErrors.length > 0 ? variantErrors : undefined,
+        mediaWarnings: mediaWarnings.length > 0 ? mediaWarnings : undefined,
       }),
     );
   } catch (error) {

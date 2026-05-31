@@ -4,6 +4,8 @@ import {
   useApi,
   AdminAction,
   BlockStack,
+  InlineStack,
+  Section,
   Text,
   Button,
   Badge,
@@ -12,6 +14,7 @@ import {
 } from "@shopify/ui-extensions-react/admin";
 
 const MAX_FIELDS = 6;
+const MAX_EVENTS = 8;
 
 function formatDate(dateString) {
   return new Date(dateString).toLocaleDateString("en-US", {
@@ -21,6 +24,82 @@ function formatDate(dateString) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function actionLabel(action) {
+  return action === "CREATED"
+    ? "Created"
+    : action === "DELETED"
+      ? "Deleted"
+      : "Updated";
+}
+
+function actionTone(action) {
+  return action === "DELETED"
+    ? "critical"
+    : action === "CREATED"
+      ? "success"
+      : "info";
+}
+
+// Prefer the ChangeLog history (per-event timestamps); otherwise synthesize one
+// group from the current snapshot diff so webhook-less stores still get a
+// readable (non-JSON) view.
+function buildGroups(diff) {
+  if (diff.timeline && diff.timeline.length) return diff.timeline;
+  return [
+    {
+      id: "current",
+      changedAt: diff.lastBackedUp,
+      action: "UPDATED",
+      fields: (diff.changedFields || []).map((c) => ({
+        field: c.field,
+        label: c.label,
+        summary: c.summary,
+      })),
+    },
+  ];
+}
+
+// Newest-first timeline: a timestamp header per event, the action as a badge,
+// then each changed field as a labelled badge + readable summary. Never JSON.
+function ChangeTimeline({ groups }) {
+  return (
+    <BlockStack gap="base">
+      {groups.slice(0, MAX_EVENTS).map((event) => (
+        <Section
+          key={event.id}
+          heading={
+            event.changedAt ? formatDate(event.changedAt) : "Recent changes"
+          }
+        >
+          <BlockStack gap="small">
+            <InlineStack gap="small" blockAlignment="center">
+              <Badge tone={actionTone(event.action)}>
+                {actionLabel(event.action)}
+              </Badge>
+            </InlineStack>
+            {event.fields && event.fields.length ? (
+              event.fields.slice(0, MAX_FIELDS).map((f) => (
+                <InlineStack key={f.field} gap="small" blockAlignment="baseline">
+                  <Badge size="small-100">{f.label || f.field}</Badge>
+                  {f.summary ? <Text>{f.summary}</Text> : null}
+                </InlineStack>
+              ))
+            ) : (
+              <Text fontStyle="italic">No field-level detail recorded</Text>
+            )}
+            {event.fields && event.fields.length > MAX_FIELDS ? (
+              <Text>+{event.fields.length - MAX_FIELDS} more fields</Text>
+            ) : null}
+          </BlockStack>
+        </Section>
+      ))}
+      {groups.length > MAX_EVENTS ? (
+        <Text>+{groups.length - MAX_EVENTS} earlier changes</Text>
+      ) : null}
+    </BlockStack>
+  );
 }
 
 function RestoreProductDetail() {
@@ -68,9 +147,12 @@ function RestoreProductDetail() {
       });
       const result = await response.json();
       if (response.ok && result.success) {
+        const warns =
+          (result.variantWarnings?.length || 0) +
+          (result.mediaWarnings?.length || 0);
         setDone(
-          result.variantWarnings
-            ? `Reverted (${result.variantWarnings.length} variant warning${result.variantWarnings.length !== 1 ? "s" : ""})`
+          warns
+            ? `Reverted (${warns} warning${warns !== 1 ? "s" : ""})`
             : "Reverted to backup",
         );
       } else {
@@ -121,7 +203,7 @@ function RestoreProductDetail() {
             This product matches your last backup — nothing to restore.
           </Text>
           {diff.lastBackedUp ? (
-            <Text appearance="subdued" size="small">
+            <Text fontStyle="italic">
               Last backed up {formatDate(diff.lastBackedUp)}.
             </Text>
           ) : null}
@@ -130,9 +212,7 @@ function RestoreProductDetail() {
     );
   }
 
-  const changedFields = diff.changedFields || [];
-  const visibleFields = changedFields.slice(0, MAX_FIELDS);
-  const hiddenCount = changedFields.length - visibleFields.length;
+  const groups = buildGroups(diff);
 
   return (
     <AdminAction
@@ -156,25 +236,13 @@ function RestoreProductDetail() {
               {diff.lastBackedUp ? formatDate(diff.lastBackedUp) : "—"}.
             </Text>
             <Divider />
-            {visibleFields.map((change) => (
-              <BlockStack key={change.field} gap="none">
-                <Text fontWeight="bold">{change.field}</Text>
-                <Text appearance="subdued" size="small">
-                  {change.before} {"→"} {change.after}
-                </Text>
-              </BlockStack>
-            ))}
-            {hiddenCount > 0 ? (
-              <Text appearance="subdued" size="small">
-                +{hiddenCount} more
-              </Text>
-            ) : null}
-            <Text appearance="subdued" size="small">
-              Reverting overwrites this product with the backed-up version.
+            <ChangeTimeline groups={groups} />
+            <Divider />
+            <Text fontStyle="italic">
+              Reverting overwrites this product (fields, variants and images)
+              with the backed-up version.
             </Text>
-            {error ? (
-              <Badge tone="critical">{error}</Badge>
-            ) : null}
+            {error ? <Badge tone="critical">{error}</Badge> : null}
           </>
         )}
       </BlockStack>
