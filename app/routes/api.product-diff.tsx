@@ -202,6 +202,82 @@ function nodeCount(value: unknown): number | null {
   return null;
 }
 
+// Deep-diff variants (matched by id) so a variant change shows the actual fields
+// that changed with old → new values (e.g. "Default Title: SKU A → B") instead of
+// a useless "1 variants". before = backup (old), after = live (new).
+function summarizeVariants(before: unknown, after: unknown): string {
+  type V = Record<string, unknown>;
+  const nodesOf = (v: unknown): V[] => {
+    if (Array.isArray(v)) return v as V[];
+    if (
+      v &&
+      typeof v === "object" &&
+      Array.isArray((v as { nodes?: unknown[] }).nodes)
+    ) {
+      return (v as { nodes: V[] }).nodes;
+    }
+    return [];
+  };
+  const fmt = (v: unknown) => {
+    if (v === null || v === undefined || v === "") return "—";
+    const s = String(v);
+    return s.length > 30 ? s.slice(0, 29) + "…" : s;
+  };
+  const weightOf = (v: V) =>
+    (
+      v.inventoryItem as
+        | { measurement?: { weight?: { value?: number; unit?: string } } }
+        | undefined
+    )?.measurement?.weight;
+
+  const beforeNodes = nodesOf(before);
+  const afterNodes = nodesOf(after);
+  const FIELDS: Array<[string, string]> = [
+    ["sku", "SKU"],
+    ["price", "Price"],
+    ["compareAtPrice", "Compare-at"],
+    ["barcode", "Barcode"],
+    ["taxable", "Taxable"],
+  ];
+
+  const lines: string[] = [];
+  for (const av of afterNodes) {
+    const bv = beforeNodes.find((b) => b.id === av.id);
+    const label = (av.title as string) || (av.sku as string) || "Variant";
+    if (!bv) {
+      lines.push(`${label} added`);
+      continue;
+    }
+    const subs: string[] = [];
+    for (const [key, klabel] of FIELDS) {
+      if (JSON.stringify(bv[key]) !== JSON.stringify(av[key])) {
+        subs.push(`${klabel} ${fmt(bv[key])} → ${fmt(av[key])}`);
+      }
+    }
+    const bw = weightOf(bv);
+    const aw = weightOf(av);
+    if (JSON.stringify(bw) !== JSON.stringify(aw)) {
+      const wfmt = (w?: { value?: number; unit?: string }) =>
+        w && w.value != null ? `${w.value}${w.unit ? " " + w.unit : ""}` : "—";
+      subs.push(`Weight ${wfmt(bw)} → ${wfmt(aw)}`);
+    }
+    if (subs.length) lines.push(`${label}: ${subs.join(", ")}`);
+  }
+  for (const bv of beforeNodes) {
+    if (!afterNodes.find((a) => a.id === bv.id)) {
+      lines.push(
+        `${(bv.title as string) || (bv.sku as string) || "Variant"} removed`,
+      );
+    }
+  }
+  if (!lines.length) {
+    return beforeNodes.length !== afterNodes.length
+      ? `${beforeNodes.length} → ${afterNodes.length} variants`
+      : `${afterNodes.length} variants changed`;
+  }
+  return lines.join("; ");
+}
+
 /**
  * Build a ONE-LINE human summary of a field change. This replaces the old
  * before/after JSON.stringify (which dumped `{"nodes":[...]}` for variants,
@@ -210,6 +286,7 @@ function nodeCount(value: unknown): number | null {
 function summarizeField(field: string, before: unknown, after: unknown): string {
   switch (field) {
     case "variants":
+      return summarizeVariants(before, after);
     case "images":
     case "metafields": {
       const b = nodeCount(before);
@@ -219,7 +296,7 @@ function summarizeField(field: string, before: unknown, after: unknown): string 
         return `${b} → ${a} ${field} (${Math.abs(delta)} ${delta > 0 ? "added" : "removed"})`;
       }
       const n = a ?? b;
-      return n !== null ? `${n} ${field}` : `${prettyLabel(field)} updated`;
+      return n !== null ? `${n} ${field} changed` : `${prettyLabel(field)} updated`;
     }
     case "options": {
       const opts = Array.isArray(after)
@@ -245,8 +322,17 @@ function summarizeField(field: string, before: unknown, after: unknown): string 
     }
     case "seo":
       return "SEO updated";
-    case "descriptionHtml":
-      return "Description updated";
+    case "descriptionHtml": {
+      // Strip tags + collapse whitespace so the text change is readable.
+      const strip = (v: unknown) =>
+        String(v ?? "")
+          .replace(/<[^>]*>/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+      const clip = (s: string) =>
+        s === "" ? "—" : s.length > 40 ? s.slice(0, 39) + "…" : s;
+      return `${clip(strip(before))} → ${clip(strip(after))}`;
+    }
     default: {
       // Scalar fields (title, handle, vendor, productType, status, templateSuffix).
       const clip = (s: string) => (s.length > 40 ? s.slice(0, 39) + "…" : s);
