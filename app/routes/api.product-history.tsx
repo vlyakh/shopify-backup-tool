@@ -162,13 +162,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       );
     }
 
+    // Recent edits, newest first — NOT limited to "since the last backup", so the
+    // merchant can peel back edits from before it too. Bounded by count (last 50);
+    // events undone or reverted-to-backup are filtered below. "Revert all to
+    // backup" hides everything newer than the latest backup (see api.revert-product).
     const events = await prisma.changeLog.findMany({
       where: {
         storeId: session.shop,
         resourceType: "PRODUCT",
         resourceId,
         action: "UPDATED",
-        changedAt: { gt: latestBackupItem.backup.createdAt },
       },
       orderBy: { changedAt: "desc" },
       take: 50,

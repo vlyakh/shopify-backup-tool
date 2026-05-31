@@ -161,8 +161,8 @@ function RestoreProductBlock() {
           {allPending ? "Reverting all…" : "Revert all to backup"}
         </Button>
         <Text fontStyle="italic">
-          Only changes since your last backup appear here. For anything older,
-          restore a backup from the Store Backup app.
+          Showing your recent changes. For anything older, restore a backup from
+          the Store Backup app.
         </Text>
       </BlockStack>
     </AdminBlock>
