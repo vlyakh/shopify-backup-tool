@@ -47,6 +47,7 @@ function RestoreProductDetail() {
   const [pending, setPending] = useState({});
   const [errors, setErrors] = useState({});
   const [allPending, setAllPending] = useState(false);
+  const [confirmAll, setConfirmAll] = useState(false);
 
   async function load() {
     try {
@@ -148,8 +149,22 @@ function RestoreProductDetail() {
     <AdminAction
       title="Restore from Backup"
       primaryAction={
-        <Button onPress={revertAll} disabled={allPending}>
-          {allPending ? "Reverting all…" : "Revert all"}
+        <Button
+          onPress={() => {
+            if (confirmAll) {
+              setConfirmAll(false);
+              revertAll();
+            } else {
+              setConfirmAll(true);
+            }
+          }}
+          disabled={allPending}
+        >
+          {allPending
+            ? "Reverting all…"
+            : confirmAll
+              ? "Tap again to confirm"
+              : "Revert all"}
         </Button>
       }
       secondaryAction={<Button onPress={close}>Close</Button>}

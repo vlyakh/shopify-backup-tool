@@ -50,6 +50,7 @@ function RestoreProductBlock() {
   const [pending, setPending] = useState({});
   const [errors, setErrors] = useState({});
   const [allPending, setAllPending] = useState(false);
+  const [confirmAll, setConfirmAll] = useState(false);
 
   async function load() {
     try {
@@ -157,8 +158,22 @@ function RestoreProductBlock() {
           </Section>
         ))}
         <Divider />
-        <Button onPress={revertAll} disabled={allPending}>
-          {allPending ? "Reverting all…" : "Revert all to backup"}
+        <Button
+          onPress={() => {
+            if (confirmAll) {
+              setConfirmAll(false);
+              revertAll();
+            } else {
+              setConfirmAll(true);
+            }
+          }}
+          disabled={allPending}
+        >
+          {allPending
+            ? "Reverting all…"
+            : confirmAll
+              ? "Tap again to confirm — overwrites with backup"
+              : "Revert all to backup"}
         </Button>
         <Text fontStyle="italic">
           Showing your recent changes. For anything older, restore a backup from

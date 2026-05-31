@@ -152,6 +152,26 @@ function formatDate(isoString: string): string {
   });
 }
 
+// Download a backup's products as CSV. Fetched (App Bridge attaches the session
+// token) then saved via a blob — a plain link wouldn't carry auth.
+async function downloadCsv(backupId: string): Promise<void> {
+  try {
+    const res = await fetch(`/api/backup-export/${backupId}`);
+    if (!res.ok) return;
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `backup-${backupId}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch {
+    /* ignore */
+  }
+}
+
 function StatusBadge({ status }: { status: string }) {
   const toneMap: Record<string, "success" | "attention" | "critical" | undefined> = {
     COMPLETED: "success",
@@ -583,13 +603,17 @@ export default function Index() {
       .join(", ") || "Empty",
     String(backup.itemCount),
     backup.status === "COMPLETED" ? (
-      <Button
-        key={`r-${backup.id}`}
-        size="slim"
-        onClick={() => navigate(`/app/backups/${backup.id}`)}
-      >
-        Restore
-      </Button>
+      <InlineStack key={`a-${backup.id}`} gap="200">
+        <Button
+          size="slim"
+          onClick={() => navigate(`/app/backups/${backup.id}`)}
+        >
+          Restore
+        </Button>
+        <Button size="slim" onClick={() => downloadCsv(backup.id)}>
+          CSV
+        </Button>
+      </InlineStack>
     ) : (
       ""
     ),
