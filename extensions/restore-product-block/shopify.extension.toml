@@ -3,6 +3,7 @@ api_version = "2025-07"
 [[extensions]]
 name = "Undo Product Changes"
 handle = "restore-product-block"
+uid = "2cf96703-5b3b-3c96-8b94-382216ad4e7fa778801d"
 type = "ui_extension"
 
   [[extensions.targeting]]
