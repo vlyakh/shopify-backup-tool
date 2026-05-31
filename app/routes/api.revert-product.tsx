@@ -4,7 +4,10 @@ import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { storage } from "../services/storage.server";
 import { imageSignature } from "../services/image-signature.server";
-import { suppressWebhooksFor } from "../services/revert-bookkeeping.server";
+import {
+  suppressWebhooksFor,
+  markHidden,
+} from "../services/revert-bookkeeping.server";
 
 /**
  * CORS preflight handler. Admin UI extensions are served cross-origin from
@@ -413,8 +416,25 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       );
     }
 
-    // This product now matches the backup — skip the webhooks our own revert
-    // just fired so they don't reappear as new history rows.
+    // The product now matches this backup, so every change since it is undone:
+    // hide those history events, and hide the webhooks our revert just fired
+    // (they're recorded so the baseline advances, but flagged hidden).
+    const backup = await prisma.backup.findUnique({
+      where: { id: backupItem.backupId },
+      select: { createdAt: true },
+    });
+    if (backup) {
+      const since = await prisma.changeLog.findMany({
+        where: {
+          storeId: session.shop,
+          resourceType: "PRODUCT",
+          resourceId: productId,
+          changedAt: { gt: backup.createdAt },
+        },
+        select: { id: true },
+      });
+      for (const e of since) markHidden(e.id);
+    }
     suppressWebhooksFor(productId);
 
     return cors(

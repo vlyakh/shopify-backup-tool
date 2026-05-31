@@ -3,7 +3,7 @@ import prisma from "../db.server";
 import { recordChange } from "./changelog.server";
 import type { ResourceType, ChangeAction } from "@prisma/client";
 import { storage } from "./storage.server";
-import { consumeSuppression } from "./revert-bookkeeping.server";
+import { consumeSuppression, markHidden } from "./revert-bookkeeping.server";
 
 const MAX_ATTEMPTS = 3;
 const BATCH_SIZE = 50;
@@ -138,20 +138,6 @@ async function processEvent(event: {
 }): Promise<void> {
   const payload = JSON.parse(event.payload);
 
-  // App-initiated revert: skip recording our OWN revert's webhook so undoing an
-  // edit doesn't pile a new entry onto the change history.
-  if (
-    event.resourceType === "PRODUCT" &&
-    event.action === "UPDATED" &&
-    consumeSuppression(event.resourceId)
-  ) {
-    await prisma.webhookEvent.update({
-      where: { id: event.id },
-      data: { status: "SKIPPED", processedAt: new Date() },
-    });
-    return;
-  }
-
   // For product updates, check if this is an inventory-only change
   if (event.resourceType === "PRODUCT" && event.action === "UPDATED") {
     const inventoryOnly = await isInventoryOnlyChange(
@@ -169,14 +155,22 @@ async function processEvent(event: {
     }
   }
 
-  // Process the change through the normal changelog pipeline
-  await recordChange(
+  // Record the change. A revert/undo WE made is recorded too — so the baseline
+  // advances and the next real edit diffs correctly — but flagged hidden so it
+  // doesn't surface in the history (skipping it would leave a stale baseline that
+  // resurfaces every reverted field on the next edit).
+  const hide =
+    event.resourceType === "PRODUCT" &&
+    event.action === "UPDATED" &&
+    consumeSuppression(event.resourceId);
+  const eventId = await recordChange(
     event.storeId,
     event.resourceType,
     event.resourceId,
     event.action,
     payload,
   );
+  if (hide && eventId) markHidden(eventId);
 
   await prisma.webhookEvent.update({
     where: { id: event.id },

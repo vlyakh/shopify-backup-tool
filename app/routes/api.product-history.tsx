@@ -3,7 +3,7 @@ import { json } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { storage } from "../services/storage.server";
-import { isUndone } from "../services/revert-bookkeeping.server";
+import { isUndone, isHidden } from "../services/revert-bookkeeping.server";
 
 /**
  * Change history (audit ledger) for a product's Undo popup. Returns each webhook
@@ -101,6 +101,35 @@ type Row = {
   revertable: boolean;
 };
 
+// Friendlier than "— → value" / "value → —".
+function changeText(before: string, after: string): string {
+  if (before === "—" && after !== "—") return `Added ${after}`;
+  if (before !== "—" && after === "—") return `Removed ${before}`;
+  return `${before} → ${after}`;
+}
+
+/**
+ * Collapse consecutive edits to the SAME field into one net change, so rapid
+ * flip-flopping (Shopify fires a webhook per keystroke/save) reads as a single
+ * "— → 56" instead of three toggling rows. Rows are newest-first, so when a run
+ * shares a field we pull the "before" back to the oldest edit and target the
+ * oldest event for revert (so Undo restores the net-before value). Net-unchanged
+ * runs (toggled back to the same value) drop out entirely.
+ */
+function collapseRows(rows: Row[]): Row[] {
+  const out: Row[] = [];
+  for (const row of rows) {
+    const prev = out[out.length - 1];
+    if (prev && prev.field === row.field) {
+      prev.before = row.before; // older edit's before becomes the net before
+      prev.changeId = row.changeId; // revert to the oldest edit's before-value
+    } else {
+      out.push({ ...row });
+    }
+  }
+  return out.filter((r) => r.before !== r.after);
+}
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session, cors } = await authenticate.admin(request);
   const url = new URL(request.url);
@@ -166,6 +195,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     const rows: Row[] = [];
     for (const event of events) {
+      if (isHidden(event.id)) continue; // our own revert/undo event — don't show
       const before = await readBlob(event.beforePath);
       const after = await readBlob(event.afterPath);
       if (!after) continue; // can't show a change without the after-state
@@ -230,12 +260,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       }
     }
 
+    const collapsed = collapseRows(rows).map((r) => ({
+      changeId: r.changeId,
+      changedAt: r.changedAt,
+      field: r.field,
+      label: r.label,
+      text: changeText(r.before, r.after),
+      revertable: r.revertable,
+    }));
+
     return cors(
       json({
         hasBackup: true,
         backupItemId: latestBackupItem.id,
         lastBackedUp: latestBackupItem.backup.createdAt.toISOString(),
-        rows,
+        rows: collapsed,
       }),
     );
   } catch (error) {

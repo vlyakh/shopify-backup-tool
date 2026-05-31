@@ -172,9 +172,7 @@ function RestoreProductDetail() {
                     >
                       <InlineStack gap="small" blockAlignment="center">
                         <Badge>{row.label}</Badge>
-                        <Text>
-                          {row.before} {"→"} {row.after}
-                        </Text>
+                        <Text>{row.text}</Text>
                       </InlineStack>
                       {row.revertable ? (
                         <Button

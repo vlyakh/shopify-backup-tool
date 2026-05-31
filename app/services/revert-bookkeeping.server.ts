@@ -1,26 +1,37 @@
 /**
- * In-memory bookkeeping for the per-edit Undo so the change history "clears" as
- * the merchant undoes edits.
+ * In-memory bookkeeping so the change history "clears" as the merchant undoes
+ * edits, WITHOUT breaking the change-tracking chain.
  *
- * Two problems this solves:
- *  1. Undoing an edit is itself a product write → Shopify re-fires products/update
- *     → it would be recorded as a NEW change row. We SUPPRESS the next webhook for
- *     that product so the undo doesn't pile onto the list.
- *  2. The original edit's row must disappear once undone. We mark (changeId, field)
- *     UNDONE and the history endpoint filters those rows out.
+ * Key lesson: a revert/undo is itself a product write that re-fires
+ * products/update. We must still RECORD that webhook (so the ChangeLog baseline
+ * advances — otherwise the next real edit diffs against a stale state and every
+ * reverted field resurfaces), but MARK the recorded event HIDDEN so it doesn't
+ * show. We also hide:
+ *  - per-edit Undo: the original (changeId, field) — the row the merchant undid;
+ *  - Revert-all: every event since the backup (all of it was undone).
  *
- * State is process-local (single-instance app) and resets on redeploy — acceptable
- * for this UX; a DB-backed version can replace it later without changing callers.
+ * State is process-local (single-instance app) and resets on redeploy.
  */
 
 const SUPPRESS_MS = 90_000;
 
-// resourceId (product GID) → { remaining suppressions, expiry }
+// resourceId (product GID) → { remaining hide-marks, expiry } for the next webhooks
 const suppress = new Map<string, { count: number; expiry: number }>();
-// resourceId → timestamp until which ALL product webhooks are skipped (revert-all)
+// resourceId → timestamp until which ALL product webhooks are hidden (revert-all)
 const suppressWindow = new Map<string, number>();
 // `${changeId}::${field}` of edits the merchant has undone
 const undone = new Set<string>();
+// ChangeLog event ids that are revert-generated and must not show in history
+const hiddenEvents = new Set<string>();
+
+/** Mark a recorded ChangeLog event as revert-generated (hidden from history). */
+export function markHidden(eventId: string): void {
+  hiddenEvents.add(eventId);
+}
+
+export function isHidden(eventId: string): boolean {
+  return hiddenEvents.has(eventId);
+}
 
 /** Mark that the NEXT products/update webhook for this product is our own revert. */
 export function suppressNextWebhook(resourceId: string): void {
@@ -43,7 +54,7 @@ export function suppressWebhooksFor(resourceId: string, ms = 10_000): void {
   suppressWindow.set(resourceId, Date.now() + ms);
 }
 
-/** Consume one suppression for this product; true if its webhook should be skipped. */
+/** Consume one mark for this product; true if its just-recorded event should be HIDDEN. */
 export function consumeSuppression(resourceId: string): boolean {
   const windowUntil = suppressWindow.get(resourceId);
   if (windowUntil && windowUntil > Date.now()) return true; // burst window: skip all

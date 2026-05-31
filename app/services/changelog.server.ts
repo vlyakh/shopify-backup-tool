@@ -12,10 +12,10 @@ export async function recordChange(
   resourceId: string,
   action: ChangeAction,
   data: unknown,
-): Promise<void> {
+): Promise<string | null> {
   // Check if store has premium plan with webhooks enabled
   const store = await prisma.store.findUnique({ where: { id: storeId } });
-  if (!store?.webhooksEnabled) return;
+  if (!store?.webhooksEnabled) return null;
 
   const timestamp = Date.now();
   const afterPath = `${storeId}/changes/${resourceType}/${encodeURIComponent(resourceId)}/${timestamp}-after.json`;
@@ -47,7 +47,7 @@ export async function recordChange(
     }
   }
 
-  await prisma.changeLog.create({
+  const created = await prisma.changeLog.create({
     data: {
       storeId,
       resourceType,
@@ -58,6 +58,7 @@ export async function recordChange(
       changedFields,
     },
   });
+  return created.id;
 }
 
 /**
