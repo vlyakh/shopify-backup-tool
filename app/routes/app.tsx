@@ -26,6 +26,7 @@ export default function App() {
         </Link>
         <Link to="/app/changes">Change History</Link>
         <Link to="/app/settings">Settings</Link>
+        <Link to="/app/reset">Reset data</Link>
       </NavMenu>
       <Outlet />
     </AppProvider>
