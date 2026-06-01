@@ -4,6 +4,11 @@ import { recordChange } from "./changelog.server";
 import type { ResourceType, ChangeAction } from "@prisma/client";
 import { storage } from "./storage.server";
 import { consumeSuppression, markHidden } from "./revert-bookkeeping.server";
+import {
+  rememberInventoryItem,
+  lookupInventoryItem,
+} from "./inventory-map.server";
+import { unauthenticated } from "../shopify.server";
 
 const MAX_ATTEMPTS = 3;
 const BATCH_SIZE = 50;
@@ -122,6 +127,108 @@ async function isInventoryOnlyChange(
   return JSON.stringify(cleanedBefore) === JSON.stringify(cleanedAfter);
 }
 
+// ─── Inventory item (cost) ──────────────────────────────────────────────────
+
+/**
+ * Cold-miss fallback: resolve an inventory item's product + variant via one
+ * GraphQL lookup when it isn't in the in-memory map yet (e.g. right after a
+ * redeploy). Steady state this never runs — the map is filled from product
+ * webhooks.
+ */
+async function fetchInventoryMapping(
+  storeId: string,
+  inventoryGid: string,
+): Promise<{ productId: string; variantId: string } | null> {
+  try {
+    const { admin } = await unauthenticated.admin(storeId);
+    const resp = await admin.graphql(
+      `#graphql
+      query($id: ID!) {
+        inventoryItem(id: $id) { variant { id product { id } } }
+      }`,
+      { variables: { id: inventoryGid } },
+    );
+    const variant = (
+      (await resp.json()) as {
+        data?: { inventoryItem?: { variant?: { id?: string; product?: { id?: string } } } };
+      }
+    ).data?.inventoryItem?.variant;
+    if (variant?.id && variant.product?.id) {
+      return { productId: variant.product.id, variantId: variant.id };
+    }
+  } catch (error) {
+    console.error(`[InventoryMap] lookup failed for ${inventoryGid}:`, error);
+  }
+  return null;
+}
+
+/**
+ * Record a cost change from an inventory_items/update webhook. The product
+ * payload never carries cost, so we track it separately: keep the current cost
+ * per variant in storage, and when it changes write a minimal variant-shaped
+ * before/after blob + a ChangeLog row. The history's existing variant diff then
+ * renders it as a "Cost per item" change (cost is in VARIANT_FIELDS), and undo
+ * reverts it via inventoryItem.cost — same path as the other variant fields.
+ */
+async function handleInventoryItemUpdate(
+  storeId: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const store = await prisma.store.findUnique({ where: { id: storeId } });
+  if (!store?.webhooksEnabled) return;
+
+  const inventoryGid = String(payload.admin_graphql_api_id);
+  let mapping = lookupInventoryItem(inventoryGid);
+  if (!mapping) {
+    mapping = await fetchInventoryMapping(storeId, inventoryGid);
+    if (mapping) {
+      rememberInventoryItem(inventoryGid, mapping.productId, mapping.variantId);
+    }
+  }
+  if (!mapping) return; // can't attribute to a product — skip
+
+  const newCost = payload.cost != null ? String(payload.cost) : null;
+  const costPath = `${storeId}/state/cost/${encodeURIComponent(mapping.variantId)}.json`;
+  let prevCost: string | null = null;
+  try {
+    const raw = await storage.get(costPath);
+    if (raw) prevCost = (JSON.parse(raw) as { cost: string | null }).cost ?? null;
+  } catch {
+    prevCost = null;
+  }
+  if (String(prevCost ?? "") === String(newCost ?? "")) return; // no change
+
+  const ts = Date.now();
+  const enc = encodeURIComponent(mapping.productId);
+  const before = {
+    variants: [{ admin_graphql_api_id: mapping.variantId, cost: prevCost }],
+  };
+  const after = {
+    variants: [{ admin_graphql_api_id: mapping.variantId, cost: newCost }],
+  };
+  const beforePath = `${storeId}/changes/PRODUCT/${enc}/${ts}-cost-before.json`;
+  const afterPath = `${storeId}/changes/PRODUCT/${enc}/${ts}-cost-after.json`;
+  await storage.put(beforePath, JSON.stringify(before, null, 2));
+  await storage.put(afterPath, JSON.stringify(after, null, 2));
+
+  const created = await prisma.changeLog.create({
+    data: {
+      storeId,
+      resourceType: "PRODUCT",
+      resourceId: mapping.productId,
+      action: "UPDATED",
+      beforePath,
+      afterPath,
+      changedFields: ["variants"],
+    },
+  });
+  // A cost revert WE made re-fires inventory_items/update — record but hide it,
+  // same as product reverts, so it doesn't resurface as a new row.
+  if (consumeSuppression(mapping.productId)) markHidden(created.id);
+
+  await storage.put(costPath, JSON.stringify({ cost: newCost }));
+}
+
 // ─── Background Processor ───────────────────────────────────────────────────
 
 /**
@@ -130,6 +237,7 @@ async function isInventoryOnlyChange(
 async function processEvent(event: {
   id: string;
   storeId: string;
+  topic: string;
   resourceType: ResourceType;
   resourceId: string;
   action: ChangeAction;
@@ -137,6 +245,32 @@ async function processEvent(event: {
   attempts: number;
 }): Promise<void> {
   const payload = JSON.parse(event.payload);
+
+  // Inventory item updated — a cost change. Attribute it to a product and record
+  // it on its own (the product payload never carries cost).
+  if (event.topic === "inventory_items/update") {
+    await handleInventoryItemUpdate(event.storeId, payload);
+    await prisma.webhookEvent.update({
+      where: { id: event.id },
+      data: { status: "COMPLETED", processedAt: new Date() },
+    });
+    return;
+  }
+
+  // Keep the inventory_item_id → product/variant map warm from product payloads,
+  // so inventory_items/update can attribute cost changes without a lookup.
+  if (event.resourceType === "PRODUCT" && Array.isArray(payload.variants)) {
+    const productGid = String(payload.admin_graphql_api_id);
+    for (const v of payload.variants as Array<Record<string, unknown>>) {
+      if (v?.inventory_item_id && v?.admin_graphql_api_id) {
+        rememberInventoryItem(
+          `gid://shopify/InventoryItem/${v.inventory_item_id}`,
+          productGid,
+          String(v.admin_graphql_api_id),
+        );
+      }
+    }
+  }
 
   // For product updates, check if this is an inventory-only change
   if (event.resourceType === "PRODUCT" && event.action === "UPDATED") {

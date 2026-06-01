@@ -113,6 +113,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         const variantInput: Record<string, unknown> = { id: variantGid };
         if (sub === "sku") {
           variantInput.inventoryItem = { sku: variant.sku }; // needs write_inventory
+        } else if (sub === "cost") {
+          variantInput.inventoryItem = { cost: variant.cost }; // InventoryItemInput.cost
         } else if (sub === "compare_at_price") {
           variantInput.compareAtPrice = variant.compare_at_price; // REST→GraphQL rename
         } else {

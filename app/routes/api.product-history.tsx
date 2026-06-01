@@ -52,6 +52,7 @@ const VARIANT_FIELDS: Array<[string, string]> = [
   ["barcode", "Barcode"],
   ["sku", "SKU"],
   ["taxable", "Charge tax"],
+  ["cost", "Cost per item"],
 ];
 
 function clip(v: unknown, n = 28): string {
