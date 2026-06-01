@@ -51,6 +51,7 @@ const VARIANT_FIELDS: Array<[string, string]> = [
   ["compare_at_price", "Compare-at price"],
   ["barcode", "Barcode"],
   ["sku", "SKU"],
+  ["taxable", "Charge tax"],
 ];
 
 function clip(v: unknown, n = 28): string {
@@ -256,8 +257,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
                   changedAt,
                   field: token,
                   label: `${slabel}${suffix}`,
-                  before: clip(bv[sub]),
-                  after: clip(av[sub]),
+                  before:
+                    sub === "taxable"
+                      ? bv[sub]
+                        ? "Yes"
+                        : "No"
+                      : clip(bv[sub]),
+                  after:
+                    sub === "taxable"
+                      ? av[sub]
+                        ? "Yes"
+                        : "No"
+                      : clip(av[sub]),
                   revertable: true,
                 });
               }
