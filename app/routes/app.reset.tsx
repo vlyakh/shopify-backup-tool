@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { useFetcher } from "@remix-run/react";
+import { useFetcher, useLoaderData } from "@remix-run/react";
 import {
   Page,
   Card,
@@ -16,9 +16,55 @@ import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
-  return null;
+  const { session } = await authenticate.admin(request);
+  const [changeLogCount, backupItemCount, latestBackup, recent] =
+    await Promise.all([
+      prisma.changeLog.count({ where: { storeId: session.shop } }),
+      prisma.backupItem.count({ where: { backup: { storeId: session.shop } } }),
+      prisma.backup.findFirst({
+        where: { storeId: session.shop },
+        orderBy: { createdAt: "desc" },
+        select: { status: true, createdAt: true, productCount: true },
+      }),
+      prisma.changeLog.findMany({
+        where: { storeId: session.shop },
+        orderBy: { changedAt: "desc" },
+        take: 10,
+        select: {
+          changedAt: true,
+          resourceId: true,
+          action: true,
+          changedFields: true,
+        },
+      }),
+    ]);
+  return json({
+    changeLogCount,
+    backupItemCount,
+    latestBackup: latestBackup
+      ? {
+          status: latestBackup.status,
+          createdAt: latestBackup.createdAt.toISOString(),
+          productCount: latestBackup.productCount,
+        }
+      : null,
+    recent: recent.map((c) => ({
+      changedAt: c.changedAt.toISOString(),
+      resource: c.resourceId.replace("gid://shopify/Product/", "Product #"),
+      action: c.action,
+      fields: c.changedFields.join(", ") || "(none)",
+    })),
+  });
 };
+
+function fmt(iso: string): string {
+  return new Date(iso).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -52,6 +98,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function ResetPage() {
+  const state = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const [confirm, setConfirm] = useState<string | null>(null);
   const submitting = fetcher.formData?.get("intent");
@@ -74,6 +121,49 @@ export default function ResetPage() {
             {fetcher.data.message}
           </Banner>
         ) : null}
+
+        <Card>
+          <BlockStack gap="200">
+            <Text as="h2" variant="headingMd">
+              Current state
+            </Text>
+            <Text as="p" variant="bodyMd">
+              Change records (this store): {state.changeLogCount}
+            </Text>
+            <Text as="p" variant="bodyMd">
+              Latest backup:{" "}
+              {state.latestBackup
+                ? `${state.latestBackup.status} · ${fmt(state.latestBackup.createdAt)} · ${state.latestBackup.productCount} products`
+                : "none yet — run one before editing"}
+            </Text>
+            <Text as="p" variant="bodyMd">
+              Backed-up items: {state.backupItemCount}
+            </Text>
+          </BlockStack>
+        </Card>
+
+        <Card>
+          <BlockStack gap="200">
+            <Text as="h2" variant="headingMd">
+              Recent change records (raw)
+            </Text>
+            <Text as="p" variant="bodyMd" tone="subdued">
+              What the webhook actually recorded — make an edit, reload this page,
+              and check that the field appears under &ldquo;fields&rdquo;.
+            </Text>
+            {state.recent.length === 0 ? (
+              <Text as="p" variant="bodyMd" tone="subdued">
+                No change records yet.
+              </Text>
+            ) : (
+              state.recent.map((c, i) => (
+                <Text key={i} as="p" variant="bodyMd">
+                  {fmt(c.changedAt)} · {c.action} {c.resource} · fields: {c.fields}
+                </Text>
+              ))
+            )}
+          </BlockStack>
+        </Card>
 
         <Card>
           <BlockStack gap="400">
