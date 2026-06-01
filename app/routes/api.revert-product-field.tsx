@@ -166,6 +166,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         case "status":
           productInput.status = String(before.status ?? "").toUpperCase();
           break;
+        case "category": {
+          // ProductUpdateInput.category takes the taxonomy gid; ".../na" = clear.
+          const id = (
+            before.category as { admin_graphql_api_id?: string } | null
+          )?.admin_graphql_api_id;
+          productInput.category = id && !id.endsWith("/na") ? id : null;
+          break;
+        }
         default:
           return cors(
             json({ error: "Field not revertable per-edit" }, { status: 400 }),

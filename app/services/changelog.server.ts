@@ -141,6 +141,11 @@ function graphqlBackupToRest(
     status: String(g.status ?? "").toLowerCase(),
     tags: Array.isArray(g.tags) ? g.tags.join(", ") : (g.tags ?? ""),
     template_suffix: g.templateSuffix ?? null,
+    // Match the products/update webhook category shape (gid under
+    // admin_graphql_api_id) so first-edit diffs + reverts line up.
+    category: g.category
+      ? { admin_graphql_api_id: g.category.id, name: g.category.name }
+      : null,
     variants,
   };
 }
@@ -175,6 +180,14 @@ function firstEventChangedFields(
     if (norm(baseline[f]) !== norm(after[f])) changed.push(f);
   }
   if (tagsKey(baseline.tags) !== tagsKey(after.tags)) changed.push("tags");
+
+  // Category (in the 2024-10+ webhook): compare by taxonomy gid, na = cleared.
+  const catId = (c: unknown) => {
+    const id = (c as { admin_graphql_api_id?: string } | null)
+      ?.admin_graphql_api_id;
+    return !id || id.endsWith("/na") ? "" : id;
+  };
+  if (catId(baseline.category) !== catId(after.category)) changed.push("category");
 
   const bVars = (baseline.variants as Array<Record<string, unknown>>) ?? [];
   const aVars = (after.variants as Array<Record<string, unknown>>) ?? [];

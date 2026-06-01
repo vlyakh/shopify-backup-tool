@@ -1,7 +1,7 @@
 api_version = "2025-07"
 
 [[extensions]]
-name = "Restore Product from Backup"
+name = "Undo changes"
 handle = "restore-product-action"
 uid = "d5368b0a-ee24-5ddb-8c50-903f51c9551d9dc2a756"
 type = "ui_extension"

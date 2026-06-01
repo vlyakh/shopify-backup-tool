@@ -35,7 +35,7 @@ function groupByEvent(rows) {
 }
 
 /**
- * "Restore from Backup" action — same change history as the block, grouped by
+ * "Undo" action — same change history as the block, grouped by
  * edit, with per-edit Undo.
  */
 function RestoreProductDetail() {
@@ -108,7 +108,7 @@ function RestoreProductDetail() {
 
   if (loading) {
     return (
-      <AdminAction title="Restore from Backup">
+      <AdminAction title="Undo">
         <BlockStack gap="base">
           <ProgressIndicator size="small" />
           <Text>Checking history…</Text>
@@ -120,7 +120,7 @@ function RestoreProductDetail() {
   if (!hist?.hasBackup) {
     return (
       <AdminAction
-        title="Restore from Backup"
+        title="Undo"
         secondaryAction={<Button onPress={close}>Close</Button>}
       >
         <Text>
@@ -135,7 +135,7 @@ function RestoreProductDetail() {
   if (rows.length === 0) {
     return (
       <AdminAction
-        title="Restore from Backup"
+        title="Undo"
         secondaryAction={<Button onPress={close}>Close</Button>}
       >
         <Text>No changes since your last backup.</Text>
@@ -147,7 +147,7 @@ function RestoreProductDetail() {
 
   return (
     <AdminAction
-      title="Restore from Backup"
+      title="Undo"
       primaryAction={
         <Button
           onPress={() => {

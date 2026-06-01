@@ -84,6 +84,12 @@ function fmtScalar(field: string, value: unknown): string {
   return clip(value);
 }
 
+// The webhook category is { admin_graphql_api_id, id, name, full_name } | null.
+function catName(c: unknown): string {
+  const name = (c as { name?: string } | null)?.name;
+  return name ? clip(name) : "—";
+}
+
 type RestVariant = Record<string, unknown> & { admin_graphql_api_id?: string };
 
 function variantDesc(v: RestVariant): string {
@@ -216,6 +222,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             label: SCALAR_LABELS[field],
             before: fmtScalar(field, before?.[field]),
             after: fmtScalar(field, after[field]),
+            revertable: true,
+          });
+        } else if (field === "category") {
+          if (isUndone(event.id, field)) continue; // already undone → hide
+          rows.push({
+            changeId: event.id,
+            changedAt,
+            field,
+            label: "Category",
+            before: catName(before?.category),
+            after: catName(after.category),
             revertable: true,
           });
         } else if (field === "variants") {
