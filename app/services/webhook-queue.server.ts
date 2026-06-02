@@ -23,7 +23,8 @@ const INVENTORY_FIELDS = new Set([
   "inventory_policy",
   "inventory_management",
   "updated_at",
-  "published_at",
+  // NOTE: published_at is intentionally NOT here — it changes only on Online Store
+  // publish/unpublish, which we want to record (not treat as inventory noise).
 ]);
 
 /**

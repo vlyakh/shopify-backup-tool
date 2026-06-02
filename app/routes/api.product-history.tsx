@@ -27,7 +27,7 @@ const NOISE_KEYS = new Set([
   "admin_graphql_api_id",
   "created_at",
   "updated_at",
-  "published_at",
+  // published_at is handled (Online Store publish/unpublish), not noise.
   "published_scope",
   "variant_ids",
   "variant_gids",
@@ -237,6 +237,22 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             after: catName(after.category),
             revertable: true,
           });
+        } else if (field === "published_at") {
+          // Online Store publish/unpublish — timestamp set vs null. Show-only for
+          // now: reverting it needs publishablePublish/Unpublish (write_publications).
+          const wasPublished = !!before?.published_at;
+          const isPublished = !!after.published_at;
+          if (wasPublished !== isPublished && !isUndone(event.id, field)) {
+            rows.push({
+              changeId: event.id,
+              changedAt,
+              field,
+              label: "Publishing",
+              before: wasPublished ? "Online Store" : "—",
+              after: isPublished ? "Online Store" : "—",
+              revertable: false,
+            });
+          }
         } else if (field === "variants") {
           const bVars = (before?.variants as RestVariant[]) ?? [];
           const aVars = (after.variants as RestVariant[]) ?? [];
@@ -333,11 +349,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       field: r.field,
       label: r.label,
       // variant add/remove say it in the label already → show just the option value
-      text: r.field.startsWith("variant-add:")
-        ? r.after
-        : r.field.startsWith("variant-remove:")
-          ? r.before
-          : changeText(r.before, r.after),
+      text:
+        r.field === "published_at"
+          ? r.after !== "—"
+            ? "Published to Online Store"
+            : "Unpublished from Online Store"
+          : r.field.startsWith("variant-add:")
+            ? r.after
+            : r.field.startsWith("variant-remove:")
+              ? r.before
+              : changeText(r.before, r.after),
       revertable: r.revertable,
     }));
 
