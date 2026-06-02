@@ -247,15 +247,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             );
             if (!bv) {
               // Added variant — show it (structural; undo via "Revert all to backup").
-              rows.push({
-                changeId: event.id,
-                changedAt,
-                field: `variant-add:${av.admin_graphql_api_id}`,
-                label: "Variant",
-                before: "—",
-                after: variantDesc(av),
-                revertable: false,
-              });
+              // Skip "Default Title" — that's Shopify's single-variant placeholder,
+              // not a real variant the merchant added.
+              const desc = variantDesc(av);
+              if (desc !== "Default Title") {
+                rows.push({
+                  changeId: event.id,
+                  changedAt,
+                  field: `variant-add:${av.admin_graphql_api_id}`,
+                  label: "Variant added",
+                  before: "—",
+                  after: desc === "Variant" ? "" : desc,
+                  revertable: false,
+                });
+              }
               continue;
             }
             const suffix = multi ? ` · ${variantDesc(av)}` : "";
@@ -292,13 +297,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             const stillThere = aVars.some(
               (v) => v.admin_graphql_api_id === bv.admin_graphql_api_id,
             );
-            if (!stillThere) {
+            const desc = variantDesc(bv);
+            if (!stillThere && desc !== "Default Title") {
               rows.push({
                 changeId: event.id,
                 changedAt,
                 field: `variant-remove:${bv.admin_graphql_api_id}`,
-                label: "Variant",
-                before: variantDesc(bv),
+                label: "Variant removed",
+                before: desc === "Variant" ? "" : desc,
                 after: "—",
                 revertable: false,
               });
@@ -326,7 +332,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       changedAt: r.changedAt,
       field: r.field,
       label: r.label,
-      text: changeText(r.before, r.after),
+      // variant add/remove say it in the label already → show just the option value
+      text: r.field.startsWith("variant-add:")
+        ? r.after
+        : r.field.startsWith("variant-remove:")
+          ? r.before
+          : changeText(r.before, r.after),
       revertable: r.revertable,
     }));
 
