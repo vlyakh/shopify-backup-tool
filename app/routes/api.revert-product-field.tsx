@@ -187,7 +187,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             []) as Array<{ message: string }>),
           ...((result as { errors?: Array<{ message: string }> }).errors ?? []),
         ].map((e) => e.message);
-        if (errs.length) return cors(json({ error: errs.join(", ") }, { status: 500 }));
+        if (errs.length) {
+          const msg = errs.join(", ");
+          return cors(
+            json(
+              {
+                error: /does not exist|not found/i.test(msg)
+                  ? 'This variant no longer exists — the product’s variants were changed since this edit. Undo it with "Revert all to backup".'
+                  : msg,
+              },
+              { status: 500 },
+            ),
+          );
+        }
         suppressNextWebhook(productId);
         markUndone(changeId, field);
         return cors(json({ success: true }));
