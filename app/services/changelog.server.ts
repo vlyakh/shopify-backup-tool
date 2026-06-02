@@ -121,7 +121,7 @@ function computeChangedFields(
  * product's first-ever tracked edit can be diffed against the backup uniformly.
  * Only carries the fields the history + per-edit revert read.
  */
-function graphqlBackupToRest(
+export function graphqlBackupToRest(
   g: Record<string, any>,
 ): Record<string, unknown> {
   const variants = ((g.variants?.nodes as Array<Record<string, any>>) ?? []).map(
@@ -161,7 +161,7 @@ function graphqlBackupToRest(
  * Returns REST top-level keys that changed — only the ones the history surfaces,
  * so it avoids the shape-mismatch false positives a shallow stringify would give.
  */
-function firstEventChangedFields(
+export function firstEventChangedFields(
   baseline: Record<string, unknown>,
   after: Record<string, unknown>,
 ): string[] {

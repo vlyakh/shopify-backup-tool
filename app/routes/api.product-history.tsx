@@ -4,6 +4,10 @@ import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { storage } from "../services/storage.server";
 import { isUndone, isHidden } from "../services/revert-bookkeeping.server";
+import {
+  graphqlBackupToRest,
+  firstEventChangedFields,
+} from "../services/changelog.server";
 
 /**
  * Change history (audit ledger) for a product's Undo popup. Returns each webhook
@@ -78,7 +82,7 @@ function fmtVariantValue(sub: string, value: unknown): string {
   }
 }
 
-function clip(v: unknown, n = 28): string {
+function clip(v: unknown, n = 48): string {
   if (v === null || v === undefined || v === "") return "—";
   const s = String(v);
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
@@ -148,17 +152,21 @@ function changeText(before: string, after: string): string {
  * runs (toggled back to the same value) drop out entirely.
  */
 function collapseRows(rows: Row[]): Row[] {
-  const out: Row[] = [];
+  const out: Array<Row & { merged?: boolean }> = [];
   for (const row of rows) {
     const prev = out[out.length - 1];
     if (prev && prev.field === row.field) {
       prev.before = row.before; // older edit's before becomes the net before
       prev.changeId = row.changeId; // revert to the oldest edit's before-value
+      prev.merged = true;
     } else {
       out.push({ ...row });
     }
   }
-  return out.filter((r) => r.before !== r.after);
+  // Only drop a MERGED run that netted back to no change (A→B→A). A single edit
+  // is always a real change (the field was in changedFields) — never drop it just
+  // because its clipped display happens to match.
+  return out.filter((r) => !r.merged || r.before !== r.after);
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -230,12 +238,23 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const rows: Row[] = [];
     for (const event of events) {
       if (isHidden(event.id)) continue; // our own revert/undo event — don't show
-      const before = await readBlob(event.beforePath);
+      let before = await readBlob(event.beforePath);
       const after = await readBlob(event.afterPath);
       if (!after) continue; // can't show a change without the after-state
       const changedAt = event.changedAt.toISOString();
 
-      for (const field of event.changedFields ?? []) {
+      // First edit recorded with no baseline (the backup wasn't ready yet) →
+      // diff against the backup now so the edit isn't lost.
+      let fields = event.changedFields ?? [];
+      if (fields.length === 0 && !event.beforePath) {
+        const backupBlob = await readBlob(latestBackupItem.storagePath);
+        if (backupBlob) {
+          before = graphqlBackupToRest(backupBlob);
+          fields = firstEventChangedFields(before, after);
+        }
+      }
+
+      for (const field of fields) {
         if (NOISE_KEYS.has(field)) continue;
 
         if (field in SCALAR_LABELS) {
@@ -250,6 +269,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             revertable: true,
           });
         } else if (field === "category") {
+          // null / the ".../na" sentinel / "Uncategorized" all mean "no category"
+          // — don't report a change between any of them.
+          const catId = (c: unknown) => {
+            const id =
+              (c as { admin_graphql_api_id?: string; id?: string } | null)
+                ?.admin_graphql_api_id ??
+              (c as { id?: string } | null)?.id;
+            return !id || String(id).endsWith("/na") ? "" : String(id);
+          };
+          if (catId(before?.category) === catId(after.category)) continue;
           if (isUndone(event.id, field)) continue; // already undone → hide
           rows.push({
             changeId: event.id,
