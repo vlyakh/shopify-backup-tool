@@ -621,7 +621,9 @@ export default function Index() {
 
   return (
     <Page>
-      <TitleBar title="Store Backup" />
+      <TitleBar title="Store Backup">
+        <button onClick={() => navigate("/app/reset")}>Reset data</button>
+      </TitleBar>
       <BlockStack gap="500">
         {/* Live backup progress */}
         {activeBackup && (
