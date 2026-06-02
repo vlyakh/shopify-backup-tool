@@ -28,11 +28,17 @@ export async function recordChange(
   const changedFields: string[] = [];
 
   if (action === "UPDATED") {
-    // Look for the most recent snapshot of this resource
-    const lastChange = await prisma.changeLog.findFirst({
+    // Look for the most recent FULL snapshot of this resource. Skip our synthetic
+    // cost/inventory/metafield events (minimal blobs) — diffing a full product
+    // against one of those would flag every field as changed.
+    const recent = await prisma.changeLog.findMany({
       where: { storeId, resourceType, resourceId },
       orderBy: { changedAt: "desc" },
+      take: 10,
     });
+    const lastChange = recent.find(
+      (c) => c.afterPath && !/-(?:cost|inv|mf)-after\.json$/.test(c.afterPath),
+    );
 
     if (lastChange?.afterPath) {
       beforePath = lastChange.afterPath;

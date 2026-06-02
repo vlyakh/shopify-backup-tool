@@ -265,7 +265,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           // publishablePublish/Unpublish (needs write_publications).
           const wasPublished = !!before?.published_at;
           const isPublished = !!after.published_at;
-          if (wasPublished !== isPublished && !isUndone(event.id, field)) {
+          if (
+            before &&
+            "published_at" in before &&
+            wasPublished !== isPublished &&
+            !isUndone(event.id, field)
+          ) {
             rows.push({
               changeId: event.id,
               changedAt,
@@ -327,6 +332,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             }
             const suffix = multi ? ` · ${variantDesc(av)}` : "";
             for (const [sub, slabel] of VARIANT_FIELDS) {
+              // Field absent from the BEFORE snapshot (e.g. the backup baseline
+              // doesn't carry taxable / inventory_policy) → not a real change.
+              if (bv[sub] === undefined) continue;
               if (String(bv[sub] ?? "") !== String(av[sub] ?? "")) {
                 // token = variant:<subfield>:<gid>; subfield first so the gid
                 // (which itself contains ":") is the clean remainder on parse.
@@ -344,7 +352,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
               }
             }
             // Weight (grams in the payload; show in the merchant's unit).
-            if (String(bv.grams ?? "") !== String(av.grams ?? "")) {
+            if (
+              bv.grams !== undefined &&
+              String(bv.grams ?? "") !== String(av.grams ?? "")
+            ) {
               const token = `variant:weight:${av.admin_graphql_api_id}`;
               if (!isUndone(event.id, token)) {
                 const wfmt = (v: RestVariant) =>
