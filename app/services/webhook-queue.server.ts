@@ -20,22 +20,19 @@ const BATCH_SIZE = 50;
 const INVENTORY_FIELDS = new Set([
   "inventory_quantity",
   "old_inventory_quantity",
-  "inventory_policy",
-  "inventory_management",
   "updated_at",
-  // NOTE: published_at is intentionally NOT here — it changes only on Online Store
-  // publish/unpublish, which we want to record (not treat as inventory noise).
+  // NOT here (so they record, not treated as inventory noise): published_at
+  // (Online Store publish), inventory_policy (continue selling) and
+  // inventory_management (track quantity) — deliberate merchant settings.
 ]);
 
 /**
- * Variant-level fields that change with inventory adjustments.
+ * Variant-level fields that change with inventory adjustments (quantity only).
  */
 const VARIANT_INVENTORY_FIELDS = new Set([
   "inventory_quantity",
   "old_inventory_quantity",
   "inventory_item_id",
-  "inventory_management",
-  "inventory_policy",
   "updated_at",
 ]);
 
@@ -163,6 +160,14 @@ async function fetchInventoryMapping(
   return null;
 }
 
+// InventoryItem fields not in the product payload (REST keys). We keep their
+// current state per variant and diff old -> new on each inventory webhook.
+const INVENTORY_TRACKED = [
+  "cost",
+  "harmonized_system_code",
+  "country_code_of_origin",
+];
+
 /**
  * Record a cost change from an inventory_items/update webhook. The product
  * payload never carries cost, so we track it separately: keep the current cost
@@ -188,27 +193,33 @@ async function handleInventoryItemUpdate(
   }
   if (!mapping) return; // can't attribute to a product — skip
 
-  const newCost = payload.cost != null ? String(payload.cost) : null;
-  const costPath = `${storeId}/state/cost/${encodeURIComponent(mapping.variantId)}.json`;
-  let prevCost: string | null = null;
+  const statePath = `${storeId}/state/inventory/${encodeURIComponent(mapping.variantId)}.json`;
+  let prev: Record<string, string | null> = {};
   try {
-    const raw = await storage.get(costPath);
-    if (raw) prevCost = (JSON.parse(raw) as { cost: string | null }).cost ?? null;
+    const raw = await storage.get(statePath);
+    if (raw) prev = JSON.parse(raw) as Record<string, string | null>;
   } catch {
-    prevCost = null;
+    prev = {};
   }
-  if (String(prevCost ?? "") === String(newCost ?? "")) return; // no change
+  const next: Record<string, string | null> = {};
+  let changed = false;
+  for (const field of INVENTORY_TRACKED) {
+    const v = payload[field] != null ? String(payload[field]) : null;
+    next[field] = v;
+    if (String(prev[field] ?? "") !== String(v ?? "")) changed = true;
+  }
+  if (!changed) return; // none of the tracked fields changed
 
   const ts = Date.now();
   const enc = encodeURIComponent(mapping.productId);
   const before = {
-    variants: [{ admin_graphql_api_id: mapping.variantId, cost: prevCost }],
+    variants: [{ admin_graphql_api_id: mapping.variantId, ...prev }],
   };
   const after = {
-    variants: [{ admin_graphql_api_id: mapping.variantId, cost: newCost }],
+    variants: [{ admin_graphql_api_id: mapping.variantId, ...next }],
   };
-  const beforePath = `${storeId}/changes/PRODUCT/${enc}/${ts}-cost-before.json`;
-  const afterPath = `${storeId}/changes/PRODUCT/${enc}/${ts}-cost-after.json`;
+  const beforePath = `${storeId}/changes/PRODUCT/${enc}/${ts}-inv-before.json`;
+  const afterPath = `${storeId}/changes/PRODUCT/${enc}/${ts}-inv-after.json`;
   await storage.put(beforePath, JSON.stringify(before, null, 2));
   await storage.put(afterPath, JSON.stringify(after, null, 2));
 
@@ -227,7 +238,7 @@ async function handleInventoryItemUpdate(
   // same as product reverts, so it doesn't resurface as a new row.
   if (consumeSuppression(mapping.productId)) markHidden(created.id);
 
-  await storage.put(costPath, JSON.stringify({ cost: newCost }));
+  await storage.put(statePath, JSON.stringify(next));
 }
 
 // ─── Background Processor ───────────────────────────────────────────────────

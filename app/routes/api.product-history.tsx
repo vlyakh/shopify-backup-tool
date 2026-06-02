@@ -43,9 +43,11 @@ const SCALAR_LABELS: Record<string, string> = {
   handle: "Handle",
   tags: "Tags",
   status: "Status",
+  template_suffix: "Theme template",
 };
 
-// Revertable variant subfields (REST key → label).
+// Revertable variant subfields (REST key → label). Weight is handled separately
+// (it needs the unit). cost/HS/origin arrive via inventory_items/update.
 const VARIANT_FIELDS: Array<[string, string]> = [
   ["price", "Price"],
   ["compare_at_price", "Compare-at price"],
@@ -53,7 +55,28 @@ const VARIANT_FIELDS: Array<[string, string]> = [
   ["sku", "SKU"],
   ["taxable", "Charge tax"],
   ["cost", "Cost per item"],
+  ["requires_shipping", "Requires shipping"],
+  ["inventory_policy", "Continue selling when out of stock"],
+  ["inventory_management", "Track quantity"],
+  ["harmonized_system_code", "HS code"],
+  ["country_code_of_origin", "Country of origin"],
 ];
+
+// Friendly display for variant subfield values (booleans/enums → words).
+function fmtVariantValue(sub: string, value: unknown): string {
+  if (value === null || value === undefined || value === "") return "—";
+  switch (sub) {
+    case "taxable":
+    case "requires_shipping":
+      return value ? "Yes" : "No";
+    case "inventory_management":
+      return value === "shopify" ? "Tracked" : "Not tracked";
+    case "inventory_policy":
+      return value === "continue" ? "Continue selling" : "Stop selling";
+    default:
+      return clip(value);
+  }
+}
 
 function clip(v: unknown, n = 28): string {
   if (v === null || v === undefined || v === "") return "—";
@@ -291,18 +314,27 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
                   changedAt,
                   field: token,
                   label: `${slabel}${suffix}`,
-                  before:
-                    sub === "taxable"
-                      ? bv[sub]
-                        ? "Yes"
-                        : "No"
-                      : clip(bv[sub]),
-                  after:
-                    sub === "taxable"
-                      ? av[sub]
-                        ? "Yes"
-                        : "No"
-                      : clip(av[sub]),
+                  before: fmtVariantValue(sub, bv[sub]),
+                  after: fmtVariantValue(sub, av[sub]),
+                  revertable: true,
+                });
+              }
+            }
+            // Weight (grams in the payload; show in the merchant's unit).
+            if (String(bv.grams ?? "") !== String(av.grams ?? "")) {
+              const token = `variant:weight:${av.admin_graphql_api_id}`;
+              if (!isUndone(event.id, token)) {
+                const wfmt = (v: RestVariant) =>
+                  v.weight !== null && v.weight !== undefined && v.weight !== ""
+                    ? `${v.weight} ${(v.weight_unit as string) ?? ""}`.trim()
+                    : "—";
+                rows.push({
+                  changeId: event.id,
+                  changedAt,
+                  field: token,
+                  label: `Weight${suffix}`,
+                  before: wfmt(bv),
+                  after: wfmt(av),
                   revertable: true,
                 });
               }

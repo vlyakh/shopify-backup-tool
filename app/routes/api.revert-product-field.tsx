@@ -43,6 +43,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return cors(json({ error: "Method not allowed" }, { status: 405 }));
 };
 
+// REST weight_unit → GraphQL WeightUnit (for inventoryItem.measurement.weight).
+const WEIGHT_UNITS: Record<string, string> = {
+  g: "GRAMS",
+  kg: "KILOGRAMS",
+  oz: "OUNCES",
+  lb: "POUNDS",
+};
+
 type Target =
   | { kind: "product"; field: string }
   | { kind: "variant"; variantId: string; field: string };
@@ -114,7 +122,36 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         if (sub === "sku") {
           variantInput.inventoryItem = { sku: variant.sku }; // needs write_inventory
         } else if (sub === "cost") {
-          variantInput.inventoryItem = { cost: variant.cost }; // InventoryItemInput.cost
+          variantInput.inventoryItem = { cost: variant.cost };
+        } else if (sub === "harmonized_system_code") {
+          variantInput.inventoryItem = {
+            harmonizedSystemCode: variant.harmonized_system_code,
+          };
+        } else if (sub === "country_code_of_origin") {
+          variantInput.inventoryItem = {
+            countryCodeOfOrigin: variant.country_code_of_origin,
+          };
+        } else if (sub === "requires_shipping") {
+          variantInput.inventoryItem = {
+            requiresShipping: variant.requires_shipping,
+          };
+        } else if (sub === "inventory_management") {
+          variantInput.inventoryItem = {
+            tracked: variant.inventory_management === "shopify",
+          };
+        } else if (sub === "weight") {
+          variantInput.inventoryItem = {
+            measurement: {
+              weight: {
+                value: Number(variant.weight),
+                unit: WEIGHT_UNITS[String(variant.weight_unit)] ?? "GRAMS",
+              },
+            },
+          };
+        } else if (sub === "inventory_policy") {
+          variantInput.inventoryPolicy = String(
+            variant.inventory_policy ?? "deny",
+          ).toUpperCase();
         } else if (sub === "compare_at_price") {
           variantInput.compareAtPrice = variant.compare_at_price; // REST→GraphQL rename
         } else {
@@ -176,6 +213,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           productInput.category = id && !id.endsWith("/na") ? id : null;
           break;
         }
+        case "template_suffix":
+          productInput.templateSuffix = before.template_suffix ?? null;
+          break;
         default:
           return cors(
             json({ error: "Field not revertable per-edit" }, { status: 400 }),
