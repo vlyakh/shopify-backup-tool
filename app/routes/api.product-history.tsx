@@ -261,8 +261,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             revertable: true,
           });
         } else if (field === "published_at") {
-          // Online Store publish/unpublish — timestamp set vs null. Show-only for
-          // now: reverting it needs publishablePublish/Unpublish (write_publications).
+          // Online Store publish/unpublish — timestamp set vs null. Reverts via
+          // publishablePublish/Unpublish (needs write_publications).
           const wasPublished = !!before?.published_at;
           const isPublished = !!after.published_at;
           if (wasPublished !== isPublished && !isUndone(event.id, field)) {
@@ -273,7 +273,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
               label: "Publishing",
               before: wasPublished ? "Online Store" : "—",
               after: isPublished ? "Online Store" : "—",
-              revertable: false,
+              revertable: true,
             });
           }
         } else if (field === "variants") {

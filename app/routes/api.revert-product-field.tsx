@@ -34,6 +34,26 @@ const VARIANTS_BULK_UPDATE_MUTATION = `#graphql
   }
 `;
 
+const PUBLICATIONS_QUERY = `#graphql
+  query { publications(first: 25) { nodes { id name } } }
+`;
+
+const PUBLISH_MUTATION = `#graphql
+  mutation publishablePublish($id: ID!, $input: [PublicationInput!]!) {
+    publishablePublish(id: $id, input: $input) {
+      userErrors { field message }
+    }
+  }
+`;
+
+const UNPUBLISH_MUTATION = `#graphql
+  mutation publishableUnpublish($id: ID!, $input: [PublicationInput!]!) {
+    publishableUnpublish(id: $id, input: $input) {
+      userErrors { field message }
+    }
+  }
+`;
+
 /**
  * CORS preflight — extensions POST here cross-origin (see api.revert-product.tsx
  * for the full rationale; a loader is required so OPTIONS reaches authenticate.admin).
@@ -168,6 +188,51 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           ...((result as { errors?: Array<{ message: string }> }).errors ?? []),
         ].map((e) => e.message);
         if (errs.length) return cors(json({ error: errs.join(", ") }, { status: 500 }));
+        suppressNextWebhook(productId);
+        markUndone(changeId, field);
+        return cors(json({ success: true }));
+      }
+
+      // Publishing (Online Store) — publish/unpublish to match the before-state.
+      if (field === "published_at") {
+        const shouldPublish = !!before.published_at;
+        const pubs = (await (
+          await admin.graphql(PUBLICATIONS_QUERY)
+        ).json()) as {
+          data?: {
+            publications?: { nodes?: Array<{ id: string; name: string }> };
+          };
+        };
+        const publicationId = (pubs.data?.publications?.nodes ?? []).find(
+          (p) => p.name === "Online Store",
+        )?.id;
+        if (!publicationId) {
+          return cors(
+            json(
+              { error: "Online Store publication not found" },
+              { status: 500 },
+            ),
+          );
+        }
+        const result = (await (
+          await admin.graphql(
+            shouldPublish ? PUBLISH_MUTATION : UNPUBLISH_MUTATION,
+            { variables: { id: productId, input: [{ publicationId }] } },
+          )
+        ).json()) as {
+          data?: Record<string, { userErrors?: Array<{ message: string }> }>;
+          errors?: Array<{ message: string }>;
+        };
+        const key = shouldPublish
+          ? "publishablePublish"
+          : "publishableUnpublish";
+        const errs = [
+          ...(result.data?.[key]?.userErrors ?? []),
+          ...(result.errors ?? []),
+        ].map((e) => e.message);
+        if (errs.length) {
+          return cors(json({ error: errs.join(", ") }, { status: 500 }));
+        }
         suppressNextWebhook(productId);
         markUndone(changeId, field);
         return cors(json({ success: true }));
