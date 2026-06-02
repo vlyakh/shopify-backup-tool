@@ -245,7 +245,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             const bv = bVars.find(
               (v) => v.admin_graphql_api_id === av.admin_graphql_api_id,
             );
-            if (!bv) continue; // added variant — structural, not a field revert
+            if (!bv) {
+              // Added variant — show it (structural; undo via "Revert all to backup").
+              rows.push({
+                changeId: event.id,
+                changedAt,
+                field: `variant-add:${av.admin_graphql_api_id}`,
+                label: "Variant",
+                before: "—",
+                after: variantDesc(av),
+                revertable: false,
+              });
+              continue;
+            }
             const suffix = multi ? ` · ${variantDesc(av)}` : "";
             for (const [sub, slabel] of VARIANT_FIELDS) {
               if (String(bv[sub] ?? "") !== String(av[sub] ?? "")) {
@@ -273,6 +285,23 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
                   revertable: true,
                 });
               }
+            }
+          }
+          // Removed variants — present in the before snapshot, gone from after.
+          for (const bv of bVars) {
+            const stillThere = aVars.some(
+              (v) => v.admin_graphql_api_id === bv.admin_graphql_api_id,
+            );
+            if (!stillThere) {
+              rows.push({
+                changeId: event.id,
+                changedAt,
+                field: `variant-remove:${bv.admin_graphql_api_id}`,
+                label: "Variant",
+                before: variantDesc(bv),
+                after: "—",
+                revertable: false,
+              });
             }
           }
         } else if (field === "images" || field === "options") {
