@@ -6,6 +6,7 @@ import { storage } from "../services/storage.server";
 import { reconcileProductImages } from "../services/product-revert.server";
 import {
   suppressNextWebhook,
+  suppressWebhooksFor,
   markUndone,
 } from "../services/revert-bookkeeping.server";
 
@@ -49,6 +50,24 @@ const PUBLISH_MUTATION = `#graphql
 const UNPUBLISH_MUTATION = `#graphql
   mutation publishableUnpublish($id: ID!, $input: [PublicationInput!]!) {
     publishableUnpublish(id: $id, input: $input) {
+      userErrors { field message }
+    }
+  }
+`;
+
+const METAFIELDS_SET_MUTATION = `#graphql
+  mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
+    metafieldsSet(metafields: $metafields) {
+      metafields { id }
+      userErrors { field message }
+    }
+  }
+`;
+
+const METAFIELDS_DELETE_MUTATION = `#graphql
+  mutation metafieldsDelete($metafields: [MetafieldIdentifierInput!]!) {
+    metafieldsDelete(metafields: $metafields) {
+      deletedMetafields { key }
       userErrors { field message }
     }
   }
@@ -246,6 +265,58 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           return cors(json({ error: errs.join(", ") }, { status: 500 }));
         }
         suppressNextWebhook(productId);
+        markUndone(changeId, field);
+        return cors(json({ success: true }));
+      }
+
+      // Metafield — token "metafield:<namespace>|<key>". Revert to the before
+      // value, or delete it if there was no value before (it had been added).
+      if (field.startsWith("metafield:")) {
+        const k = field.slice("metafield:".length);
+        const sep = k.indexOf("|");
+        const namespace = k.slice(0, sep);
+        const key = k.slice(sep + 1);
+        const mf = (
+          (before.metafields ?? []) as Array<Record<string, unknown>>
+        ).find((m) => m.namespace === namespace && m.key === key);
+        const value = mf?.value;
+        type MfResult = {
+          data?: Record<string, { userErrors?: Array<{ message: string }> }>;
+          errors?: Array<{ message: string }>;
+        };
+        let result: MfResult;
+        if (value === null || value === undefined || value === "") {
+          result = (await (
+            await admin.graphql(METAFIELDS_DELETE_MUTATION, {
+              variables: {
+                metafields: [{ ownerId: productId, namespace, key }],
+              },
+            })
+          ).json()) as MfResult;
+        } else {
+          const input: Record<string, unknown> = {
+            ownerId: productId,
+            namespace,
+            key,
+            value: String(value),
+          };
+          if (mf?.type) input.type = mf.type;
+          result = (await (
+            await admin.graphql(METAFIELDS_SET_MUTATION, {
+              variables: { metafields: [input] },
+            })
+          ).json()) as MfResult;
+        }
+        const errs = [
+          ...(result.data?.metafieldsSet?.userErrors ?? []),
+          ...(result.data?.metafieldsDelete?.userErrors ?? []),
+          ...(result.errors ?? []),
+        ].map((e) => e.message);
+        if (errs.length) {
+          return cors(json({ error: errs.join(", ") }, { status: 500 }));
+        }
+        // Suppress both the main + metafields webhooks the write triggers.
+        suppressWebhooksFor(productId);
         markUndone(changeId, field);
         return cors(json({ success: true }));
       }

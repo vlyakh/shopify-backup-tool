@@ -241,6 +241,77 @@ async function handleInventoryItemUpdate(
   await storage.put(statePath, JSON.stringify(next));
 }
 
+/**
+ * Record product metafield changes from the dedicated metafields subscription.
+ * Keep the current value per namespace|key in storage and, when a value changes,
+ * write a minimal before/after blob the history renders as "Metafield: key" and
+ * undo reverts via metafieldsSet. Fires on every product update, so it no-ops
+ * unless a tracked metafield actually changed.
+ */
+async function handleProductMetafields(
+  storeId: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const store = await prisma.store.findUnique({ where: { id: storeId } });
+  if (!store?.webhooksEnabled) return;
+
+  const productId = String(payload.admin_graphql_api_id);
+  const metafields = (payload.metafields ?? []) as Array<Record<string, unknown>>;
+
+  const statePath = `${storeId}/state/metafields/${encodeURIComponent(productId)}.json`;
+  let prev: Record<string, string | null> = {};
+  try {
+    const raw = await storage.get(statePath);
+    if (raw) prev = JSON.parse(raw) as Record<string, string | null>;
+  } catch {
+    prev = {};
+  }
+
+  const next: Record<string, string | null> = {};
+  const types: Record<string, string> = {};
+  for (const mf of metafields) {
+    const ns = String(mf.namespace ?? "");
+    const key = String(mf.key ?? "");
+    if (!ns || !key) continue;
+    const k = `${ns}|${key}`;
+    next[k] = mf.value != null ? String(mf.value) : null;
+    const t = (mf.type ?? mf.value_type) as string | undefined;
+    if (t) types[k] = t;
+  }
+
+  const before: Array<Record<string, unknown>> = [];
+  const after: Array<Record<string, unknown>> = [];
+  for (const k of new Set([...Object.keys(prev), ...Object.keys(next)])) {
+    if (String(prev[k] ?? "") === String(next[k] ?? "")) continue;
+    const [namespace, key] = k.split("|");
+    before.push({ namespace, key, value: prev[k] ?? null });
+    after.push({ namespace, key, value: next[k] ?? null, type: types[k] });
+  }
+  if (after.length === 0) return; // no tracked metafield changed
+
+  const ts = Date.now();
+  const enc = encodeURIComponent(productId);
+  const beforePath = `${storeId}/changes/PRODUCT/${enc}/${ts}-mf-before.json`;
+  const afterPath = `${storeId}/changes/PRODUCT/${enc}/${ts}-mf-after.json`;
+  await storage.put(beforePath, JSON.stringify({ metafields: before }, null, 2));
+  await storage.put(afterPath, JSON.stringify({ metafields: after }, null, 2));
+
+  const created = await prisma.changeLog.create({
+    data: {
+      storeId,
+      resourceType: "PRODUCT",
+      resourceId: productId,
+      action: "UPDATED",
+      beforePath,
+      afterPath,
+      changedFields: ["metafields"],
+    },
+  });
+  if (consumeSuppression(productId)) markHidden(created.id);
+
+  await storage.put(statePath, JSON.stringify(next));
+}
+
 // ─── Background Processor ───────────────────────────────────────────────────
 
 /**
@@ -262,6 +333,16 @@ async function processEvent(event: {
   // it on its own (the product payload never carries cost).
   if (event.topic === "inventory_items/update") {
     await handleInventoryItemUpdate(event.storeId, payload);
+    await prisma.webhookEvent.update({
+      where: { id: event.id },
+      data: { status: "COMPLETED", processedAt: new Date() },
+    });
+    return;
+  }
+
+  // Product metafields — from the dedicated metafields subscription.
+  if (event.topic === "products/metafields") {
+    await handleProductMetafields(event.storeId, payload);
     await prisma.webhookEvent.update({
       where: { id: event.id },
       data: { status: "COMPLETED", processedAt: new Date() },

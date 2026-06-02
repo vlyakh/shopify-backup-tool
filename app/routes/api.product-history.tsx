@@ -276,6 +276,29 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
               revertable: true,
             });
           }
+        } else if (field === "metafields") {
+          // Minimal blob: { metafields: [{ namespace, key, value, type? }] }.
+          const bMf =
+            (before?.metafields as Array<Record<string, unknown>>) ?? [];
+          const aMf = (after.metafields as Array<Record<string, unknown>>) ?? [];
+          const mfKey = (m: Record<string, unknown>) =>
+            `${m.namespace}|${m.key}`;
+          for (const k of new Set([...bMf, ...aMf].map(mfKey))) {
+            const bv = bMf.find((m) => mfKey(m) === k)?.value ?? null;
+            const av = aMf.find((m) => mfKey(m) === k)?.value ?? null;
+            if (String(bv ?? "") === String(av ?? "")) continue;
+            const token = `metafield:${k}`;
+            if (isUndone(event.id, token)) continue;
+            rows.push({
+              changeId: event.id,
+              changedAt,
+              field: token,
+              label: `Metafield: ${k.split("|")[1] ?? k}`,
+              before: clip(bv),
+              after: clip(av),
+              revertable: true,
+            });
+          }
         } else if (field === "variants") {
           const bVars = (before?.variants as RestVariant[]) ?? [];
           const aVars = (after.variants as RestVariant[]) ?? [];

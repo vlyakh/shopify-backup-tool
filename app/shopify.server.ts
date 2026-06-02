@@ -70,6 +70,17 @@ const shopify = shopifyApp({
           );
         });
       }
+
+      // Register the metafields-scoped products/update webhook (declarative TOML
+      // can't set metafieldNamespaces). Idempotent + fire-and-forget.
+      const { ensureMetafieldWebhook } = await import(
+        "./services/webhook-register.server"
+      );
+      ensureMetafieldWebhook(admin, process.env.SHOPIFY_APP_URL || "").catch(
+        (err) => {
+          console.error(`[afterAuth] metafield webhook registration failed:`, err);
+        },
+      );
     },
   },
   ...(process.env.SHOP_CUSTOM_DOMAIN
