@@ -110,6 +110,10 @@ function fmtScalar(field: string, value: unknown): string {
       ? `${a.slice(0, 3).join(", ")}${a.length > 3 ? ` +${a.length - 3}` : ""}`
       : "—";
   }
+  if (field === "status") {
+    const s = String(value ?? "").trim();
+    return s ? s.charAt(0).toUpperCase() + s.slice(1) : "—";
+  }
   return clip(value);
 }
 
@@ -295,6 +299,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             revertable: true,
           });
         } else if (field === "published_at") {
+          // Publishing flips as a side effect of a status change (active publishes,
+          // draft unpublishes) — don't double-report it when status changed too.
+          if (fields.includes("status")) continue;
           // Online Store publish/unpublish — timestamp set vs null. Reverts via
           // publishablePublish/Unpublish (needs write_publications).
           const wasPublished = !!before?.published_at;
