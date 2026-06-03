@@ -136,11 +136,16 @@ type Row = {
   revertable: boolean;
 };
 
-// Friendlier than "— → value" / "value → —".
-function changeText(before: string, after: string): string {
-  if (before === "—" && after !== "—") return `Added ${after}`;
-  if (before !== "—" && after === "—") return `Removed ${before}`;
-  return `${before} → ${after}`;
+// Classify a change so the popup can show the action (Added/Removed) as its own
+// badge, instead of "Added <value>" reading as one phrase.
+function classifyChange(
+  before: string,
+  after: string,
+): { change: "added" | "removed" | "changed"; text: string } {
+  if (before === "—" && after !== "—") return { change: "added", text: after };
+  if (before !== "—" && after === "—")
+    return { change: "removed", text: before };
+  return { change: "changed", text: `${before} → ${after}` };
 }
 
 /**
@@ -347,13 +352,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
               // not a real variant the merchant added.
               const desc = variantDesc(av);
               if (desc !== "Default Title") {
+                const parts: string[] = [];
+                if (desc !== "Variant") parts.push(desc);
+                if (av.price != null && av.price !== "")
+                  parts.push(`$${av.price}`);
                 rows.push({
                   changeId: event.id,
                   changedAt,
                   field: `variant-add:${av.admin_graphql_api_id}`,
                   label: "Variant added",
                   before: "—",
-                  after: desc === "Variant" ? "" : desc,
+                  after: parts.join(" · "),
                   revertable: false,
                 });
               }
@@ -425,37 +434,48 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           // Shown for visibility but not per-edit revertable (image ids are
           // reassigned on re-ingestion; options restructure variants).
           const count = (v: unknown) => (Array.isArray(v) ? v.length : 0);
+          const b = count(before?.[field]);
+          const a = count(after[field]);
+          if (b === a) continue; // count unchanged → noise (the real change shows elsewhere)
           rows.push({
             changeId: event.id,
             changedAt,
             field,
             label: field === "images" ? "Images" : "Options",
-            before: `${count(before?.[field])} ${field}`,
-            after: `${count(after[field])} ${field}`,
+            before: `${b} ${field}`,
+            after: `${a} ${field}`,
             revertable: false,
           });
         }
       }
     }
 
-    const collapsed = collapseRows(rows).map((r) => ({
-      changeId: r.changeId,
-      changedAt: r.changedAt,
-      field: r.field,
-      label: r.label,
-      // variant add/remove say it in the label already → show just the option value
-      text:
+    const collapsed = collapseRows(rows).map((r) => {
+      // Special-cased rows say the action in their label already → no action badge.
+      const classified =
         r.field === "published_at"
-          ? r.after !== "—"
-            ? "Published to Online Store"
-            : "Unpublished from Online Store"
+          ? {
+              change: "changed" as const,
+              text:
+                r.after !== "—"
+                  ? "Published to Online Store"
+                  : "Unpublished from Online Store",
+            }
           : r.field.startsWith("variant-add:")
-            ? r.after
+            ? { change: "changed" as const, text: r.after }
             : r.field.startsWith("variant-remove:")
-              ? r.before
-              : changeText(r.before, r.after),
-      revertable: r.revertable,
-    }));
+              ? { change: "changed" as const, text: r.before }
+              : classifyChange(r.before, r.after);
+      return {
+        changeId: r.changeId,
+        changedAt: r.changedAt,
+        field: r.field,
+        label: r.label,
+        change: classified.change,
+        text: classified.text,
+        revertable: r.revertable,
+      };
+    });
 
     return cors(
       json({

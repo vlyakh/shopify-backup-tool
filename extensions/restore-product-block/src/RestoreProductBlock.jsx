@@ -137,6 +137,11 @@ function RestoreProductBlock() {
                     >
                       <InlineStack gap="small" blockAlignment="center">
                         <Badge>{row.label}</Badge>
+                        {row.change === "added" ? (
+                          <Badge tone="success">Added</Badge>
+                        ) : row.change === "removed" ? (
+                          <Badge tone="critical">Removed</Badge>
+                        ) : null}
                         <Text>{row.text}</Text>
                       </InlineStack>
                       {row.revertable ? (
