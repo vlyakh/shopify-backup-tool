@@ -728,6 +728,9 @@ async function restoreTheme(
  * Restore specific items from a backup.
  *
  * @param admin - Shopify Admin GraphQL API context
+ * @param shop - The authenticated shop domain. Item ids come from the client,
+ *   so the query MUST be scoped to this shop's backups — otherwise any
+ *   merchant could restore another store's backup data into their own shop.
  * @param backupItemIds - IDs of BackupItem records to restore
  * @param rest - Optional REST context (shop + accessToken) needed for
  *   BLOG_POST and THEME restores which require the REST Admin API.
@@ -735,11 +738,12 @@ async function restoreTheme(
  */
 export async function restoreItems(
   admin: AdminApiContext,
+  shop: string,
   backupItemIds: string[],
   rest?: RestContext,
 ): Promise<RestoreResult[]> {
   const items = await prisma.backupItem.findMany({
-    where: { id: { in: backupItemIds } },
+    where: { id: { in: backupItemIds }, backup: { storeId: shop } },
   });
 
   const results: RestoreResult[] = [];
@@ -819,21 +823,26 @@ export async function restoreItems(
  * Restore an entire backup.
  *
  * @param admin - Shopify Admin GraphQL API context
+ * @param shop - The authenticated shop domain; the backup must belong to it
  * @param backupId - The backup to restore from
  * @param resourceTypes - Optional filter to only restore certain resource types
  * @param rest - Optional REST context needed for BLOG_POST and THEME restores
  */
 export async function restoreBackup(
   admin: AdminApiContext,
+  shop: string,
   backupId: string,
   resourceTypes?: ResourceType[],
   rest?: RestContext,
 ): Promise<RestoreResult[]> {
-  const where: Record<string, unknown> = { backupId };
+  const where: Record<string, unknown> = {
+    backupId,
+    backup: { storeId: shop },
+  };
   if (resourceTypes?.length) {
     where.resourceType = { in: resourceTypes };
   }
 
   const items = await prisma.backupItem.findMany({ where });
-  return restoreItems(admin, items.map((i) => i.id), rest);
+  return restoreItems(admin, shop, items.map((i) => i.id), rest);
 }

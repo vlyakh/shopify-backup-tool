@@ -7,22 +7,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const { shop, topic } = await authenticate.webhook(request);
   console.log(`[Webhook] ${topic} for ${shop}`);
 
-  // Shop data erasure request - delete all data for this shop
-  // Delete backups and their storage
-  const backups = await prisma.backup.findMany({
-    where: { storeId: shop },
-    select: { id: true },
-  });
-
-  for (const backup of backups) {
-    await storage.deletePrefix(`${shop}/${backup.id}/`);
-  }
-
-  // Delete change logs storage
-  await storage.deletePrefix(`${shop}/changes/`);
+  // Shop data erasure request - delete ALL data for this shop.
+  // Every blob lives under `${shop}/` (backups, changes/, state/), so one
+  // prefix delete erases the lot.
+  await storage.deletePrefix(`${shop}/`);
 
   // Delete all database records
   await prisma.changeLog.deleteMany({ where: { storeId: shop } });
+  await prisma.webhookEvent.deleteMany({ where: { storeId: shop } });
   await prisma.backupItem.deleteMany({
     where: { backup: { storeId: shop } },
   });

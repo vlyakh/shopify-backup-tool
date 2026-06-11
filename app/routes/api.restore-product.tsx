@@ -23,7 +23,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
  * Body: { backupItemId: string }
  */
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { admin, cors } = await authenticate.admin(request);
+  const { admin, session, cors } = await authenticate.admin(request);
 
   const body = await request.json();
   const { backupItemId } = body;
@@ -33,7 +33,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   try {
-    const results = await restoreItems(admin, [backupItemId]);
+    const results = await restoreItems(admin, session.shop, [backupItemId]);
     const result = results[0];
 
     if (!result) {

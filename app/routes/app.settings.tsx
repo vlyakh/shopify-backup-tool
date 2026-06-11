@@ -166,9 +166,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   if (actionType === "deleteAllBackups") {
-    // Remove every stored backup file for this shop, then the DB records.
-    // BackupItem rows cascade-delete with their parent Backup.
-    await storage.deletePrefix(`${shop}/`);
+    // Remove each backup's blob prefix (`${shop}/${backupId}/...`), then the DB
+    // records. BackupItem rows cascade-delete with their parent Backup. Do NOT
+    // delete the whole `${shop}/` prefix — it also holds the change-ledger
+    // snapshots (`${shop}/changes/...`) and the cost/metafield diff baselines
+    // (`${shop}/state/...`) that the undo timeline depends on.
+    const backups = await prisma.backup.findMany({
+      where: { storeId: shop },
+      select: { id: true },
+    });
+    for (const backup of backups) {
+      await storage.deletePrefix(`${shop}/${backup.id}/`);
+    }
     await prisma.backup.deleteMany({ where: { storeId: shop } });
 
     return json({ success: true });

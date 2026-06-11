@@ -73,7 +73,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       ? { shop: session.shop, accessToken: session.accessToken }
       : undefined;
 
-    const results = await restoreItems(admin, itemIds, rest);
+    const results = await restoreItems(admin, session.shop, itemIds, rest);
     const succeeded = results.filter((r) => r.success).length;
     const failed = results.filter((r) => !r.success).length;
 
