@@ -4,10 +4,7 @@ import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { storage } from "../services/storage.server";
 import { imageSignature } from "../services/image-signature.server";
-import {
-  suppressWebhooksFor,
-  markHidden,
-} from "../services/revert-bookkeeping.server";
+import { suppressWebhooksFor } from "../services/revert-bookkeeping.server";
 
 /**
  * CORS preflight handler. Admin UI extensions are served cross-origin from
@@ -424,18 +421,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       select: { createdAt: true },
     });
     if (backup) {
-      const since = await prisma.changeLog.findMany({
+      await prisma.changeLog.updateMany({
         where: {
           storeId: session.shop,
           resourceType: "PRODUCT",
           resourceId: productId,
           changedAt: { gt: backup.createdAt },
         },
-        select: { id: true },
+        data: { hidden: true },
       });
-      for (const e of since) markHidden(e.id);
     }
-    suppressWebhooksFor(productId);
+    await suppressWebhooksFor(session.shop, productId);
 
     return cors(
       json({

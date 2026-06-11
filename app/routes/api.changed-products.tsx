@@ -39,6 +39,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         resourceType: "PRODUCT",
         action: "UPDATED",
         changedAt: { gt: latestBackup.createdAt },
+        // Skip our own revert echoes and events undone by "Revert all to
+        // backup" — a reverted product matches its backup again and should
+        // drop off this list.
+        hidden: false,
       },
       orderBy: { changedAt: "desc" },
     });

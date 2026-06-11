@@ -28,11 +28,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     include: { backup: { select: { createdAt: true } } },
   });
 
-  // Count recent changes for this resource (premium tier)
+  // Count recent changes for this resource (premium tier). Skip hidden
+  // (revert-generated / reverted-to-backup) events so this badge agrees with
+  // the changed-products list and the undo timeline.
   const recentChanges = await prisma.changeLog.count({
     where: {
       storeId: session.shop,
       resourceId,
+      hidden: false,
       changedAt: latestBackupItem?.backup.createdAt
         ? { gt: latestBackupItem.backup.createdAt }
         : undefined,

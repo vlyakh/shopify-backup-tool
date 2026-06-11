@@ -5,6 +5,8 @@ import type { ResourceType, ChangeAction } from "@prisma/client";
 /**
  * Record a change from a webhook event.
  * Stores before/after snapshots and identifies changed fields.
+ * `hidden` marks revert-generated events: recorded (so the diff baseline
+ * advances) but not shown in the merchant-facing history.
  */
 export async function recordChange(
   storeId: string,
@@ -12,6 +14,7 @@ export async function recordChange(
   resourceId: string,
   action: ChangeAction,
   data: unknown,
+  hidden = false,
 ): Promise<string | null> {
   // Check if store has premium plan with webhooks enabled
   const store = await prisma.store.findUnique({ where: { id: storeId } });
@@ -88,6 +91,7 @@ export async function recordChange(
       beforePath,
       afterPath,
       changedFields,
+      hidden,
     },
   });
   return created.id;

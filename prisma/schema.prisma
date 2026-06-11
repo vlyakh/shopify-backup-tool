@@ -163,6 +163,15 @@ model ChangeLog {
   // Summary of what changed
   changedFields String[] // e.g. ["title", "price", "variants[0].price"]
 
+  // Revert-generated event (our own write's webhook echo, or an event undone by
+  // "Revert all to backup"). Recorded so the diff baseline advances, but hidden
+  // from the merchant-facing history.
+  hidden Boolean @default(false)
+
+  // Field tokens of edits the merchant has undone via per-field Undo
+  // (e.g. ["title", "variant:price:gid://shopify/ProductVariant/123"])
+  undoneFields String[] @default([])
+
   @@index([storeId, changedAt])
   @@index([storeId, resourceType])
 }
@@ -171,6 +180,25 @@ enum ChangeAction {
   CREATED
   UPDATED
   DELETED
+}
+
+// Marks that the next products/update webhook(s) for a product are echoes of
+// our own revert writes and should be recorded hidden. Replaces what used to be
+// process-local memory (lost on every redeploy, broken with >1 instance).
+model RevertSuppression {
+  storeId    String
+  resourceId String // product GID
+
+  // "Hide the next N webhooks" marks (per-field undo); valid until countExpiresAt
+  count          Int       @default(0)
+  countExpiresAt DateTime?
+
+  // "Hide ALL webhooks until this time" burst window (revert-all / metafields)
+  windowUntil DateTime?
+
+  updatedAt DateTime @updatedAt
+
+  @@id([storeId, resourceId])
 }
 
 // Webhook intake queue — accepts events fast, processes in background

@@ -3,7 +3,11 @@ import prisma from "../db.server";
 import { recordChange } from "./changelog.server";
 import type { ResourceType, ChangeAction } from "@prisma/client";
 import { storage } from "./storage.server";
-import { consumeSuppression, markHidden } from "./revert-bookkeeping.server";
+import {
+  consumeSuppression,
+  suppressNextWebhook,
+  cleanupExpiredSuppressions,
+} from "./revert-bookkeeping.server";
 import {
   rememberInventoryItem,
   lookupInventoryItem,
@@ -179,6 +183,7 @@ const INVENTORY_TRACKED = [
 async function handleInventoryItemUpdate(
   storeId: string,
   payload: Record<string, unknown>,
+  deliveredAt: Date,
 ): Promise<void> {
   const store = await prisma.store.findUnique({ where: { id: storeId } });
   if (!store?.webhooksEnabled) return;
@@ -223,20 +228,28 @@ async function handleInventoryItemUpdate(
   await storage.put(beforePath, JSON.stringify(before, null, 2));
   await storage.put(afterPath, JSON.stringify(after, null, 2));
 
-  const created = await prisma.changeLog.create({
-    data: {
-      storeId,
-      resourceType: "PRODUCT",
-      resourceId: mapping.productId,
-      action: "UPDATED",
-      beforePath,
-      afterPath,
-      changedFields: ["variants"],
-    },
-  });
   // A cost revert WE made re-fires inventory_items/update — record but hide it,
   // same as product reverts, so it doesn't resurface as a new row.
-  if (consumeSuppression(mapping.productId)) markHidden(created.id);
+  const hidden = await consumeSuppression(storeId, mapping.productId, deliveredAt);
+  try {
+    await prisma.changeLog.create({
+      data: {
+        storeId,
+        resourceType: "PRODUCT",
+        resourceId: mapping.productId,
+        action: "UPDATED",
+        beforePath,
+        afterPath,
+        changedFields: ["variants"],
+        hidden,
+      },
+    });
+  } catch (error) {
+    // The mark is consumed but nothing was recorded — re-arm it so the retry
+    // still hides this echo.
+    if (hidden) await suppressNextWebhook(storeId, mapping.productId);
+    throw error;
+  }
 
   await storage.put(statePath, JSON.stringify(next));
 }
@@ -251,6 +264,7 @@ async function handleInventoryItemUpdate(
 async function handleProductMetafields(
   storeId: string,
   payload: Record<string, unknown>,
+  deliveredAt: Date,
 ): Promise<void> {
   const store = await prisma.store.findUnique({ where: { id: storeId } });
   if (!store?.webhooksEnabled) return;
@@ -296,18 +310,24 @@ async function handleProductMetafields(
   await storage.put(beforePath, JSON.stringify({ metafields: before }, null, 2));
   await storage.put(afterPath, JSON.stringify({ metafields: after }, null, 2));
 
-  const created = await prisma.changeLog.create({
-    data: {
-      storeId,
-      resourceType: "PRODUCT",
-      resourceId: productId,
-      action: "UPDATED",
-      beforePath,
-      afterPath,
-      changedFields: ["metafields"],
-    },
-  });
-  if (consumeSuppression(productId)) markHidden(created.id);
+  const hidden = await consumeSuppression(storeId, productId, deliveredAt);
+  try {
+    await prisma.changeLog.create({
+      data: {
+        storeId,
+        resourceType: "PRODUCT",
+        resourceId: productId,
+        action: "UPDATED",
+        beforePath,
+        afterPath,
+        changedFields: ["metafields"],
+        hidden,
+      },
+    });
+  } catch (error) {
+    if (hidden) await suppressNextWebhook(storeId, productId);
+    throw error;
+  }
 
   await storage.put(statePath, JSON.stringify(next));
 }
@@ -326,13 +346,14 @@ async function processEvent(event: {
   action: ChangeAction;
   payload: string;
   attempts: number;
+  createdAt: Date;
 }): Promise<void> {
   const payload = JSON.parse(event.payload);
 
   // Inventory item updated — a cost change. Attribute it to a product and record
   // it on its own (the product payload never carries cost).
   if (event.topic === "inventory_items/update") {
-    await handleInventoryItemUpdate(event.storeId, payload);
+    await handleInventoryItemUpdate(event.storeId, payload, event.createdAt);
     await prisma.webhookEvent.update({
       where: { id: event.id },
       data: { status: "COMPLETED", processedAt: new Date() },
@@ -342,7 +363,7 @@ async function processEvent(event: {
 
   // Product metafields — from the dedicated metafields subscription.
   if (event.topic === "products/metafields") {
-    await handleProductMetafields(event.storeId, payload);
+    await handleProductMetafields(event.storeId, payload, event.createdAt);
     await prisma.webhookEvent.update({
       where: { id: event.id },
       data: { status: "COMPLETED", processedAt: new Date() },
@@ -389,15 +410,26 @@ async function processEvent(event: {
   const hide =
     event.resourceType === "PRODUCT" &&
     event.action === "UPDATED" &&
-    consumeSuppression(event.resourceId);
-  const eventId = await recordChange(
-    event.storeId,
-    event.resourceType,
-    event.resourceId,
-    event.action,
-    payload,
-  );
-  if (hide && eventId) markHidden(eventId);
+    (await consumeSuppression(
+      event.storeId,
+      event.resourceId,
+      event.createdAt,
+    ));
+  try {
+    await recordChange(
+      event.storeId,
+      event.resourceType,
+      event.resourceId,
+      event.action,
+      payload,
+      hide,
+    );
+  } catch (error) {
+    // The mark is consumed but nothing was recorded — re-arm it so the retry
+    // still hides this echo.
+    if (hide) await suppressNextWebhook(event.storeId, event.resourceId);
+    throw error;
+  }
 
   await prisma.webhookEvent.update({
     where: { id: event.id },
@@ -485,6 +517,11 @@ async function cleanupProcessedEvents(): Promise<void> {
 
     if (count > 0) {
       console.log(`[WebhookQueue] Cleaned up ${count} old processed events`);
+    }
+
+    const stale = await cleanupExpiredSuppressions();
+    if (stale > 0) {
+      console.log(`[WebhookQueue] Cleaned up ${stale} stale suppression rows`);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

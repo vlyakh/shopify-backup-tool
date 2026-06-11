@@ -3,7 +3,6 @@ import { json } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { storage } from "../services/storage.server";
-import { isUndone, isHidden } from "../services/revert-bookkeeping.server";
 import {
   graphqlBackupToRest,
   firstEventChangedFields,
@@ -220,6 +219,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         resourceType: "PRODUCT",
         resourceId,
         action: "UPDATED",
+        hidden: false, // our own revert/undo events — don't show
       },
       orderBy: { changedAt: "desc" },
       take: 50,
@@ -246,7 +246,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     const rows: Row[] = [];
     for (const event of events) {
-      if (isHidden(event.id)) continue; // our own revert/undo event — don't show
+      // Edits the merchant already undid via per-field Undo → hide those rows.
+      const undone = (field: string) => event.undoneFields.includes(field);
       let before = await readBlob(event.beforePath);
       const after = await readBlob(event.afterPath);
       if (!after) continue; // can't show a change without the after-state
@@ -267,7 +268,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         if (NOISE_KEYS.has(field)) continue;
 
         if (field in SCALAR_LABELS) {
-          if (isUndone(event.id, field)) continue; // already undone → hide
+          if (undone(field)) continue; // already undone → hide
           rows.push({
             changeId: event.id,
             changedAt,
@@ -288,7 +289,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             return !id || String(id).endsWith("/na") ? "" : String(id);
           };
           if (catId(before?.category) === catId(after.category)) continue;
-          if (isUndone(event.id, field)) continue; // already undone → hide
+          if (undone(field)) continue; // already undone → hide
           rows.push({
             changeId: event.id,
             changedAt,
@@ -310,7 +311,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             before &&
             "published_at" in before &&
             wasPublished !== isPublished &&
-            !isUndone(event.id, field)
+            !undone(field)
           ) {
             rows.push({
               changeId: event.id,
@@ -334,7 +335,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             const av = aMf.find((m) => mfKey(m) === k)?.value ?? null;
             if (String(bv ?? "") === String(av ?? "")) continue;
             const token = `metafield:${k}`;
-            if (isUndone(event.id, token)) continue;
+            if (undone(token)) continue;
             rows.push({
               changeId: event.id,
               changedAt,
@@ -384,7 +385,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
                 // token = variant:<subfield>:<gid>; subfield first so the gid
                 // (which itself contains ":") is the clean remainder on parse.
                 const token = `variant:${sub}:${av.admin_graphql_api_id}`;
-                if (isUndone(event.id, token)) continue; // already undone → hide
+                if (undone(token)) continue; // already undone → hide
                 rows.push({
                   changeId: event.id,
                   changedAt,
@@ -402,7 +403,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
               String(bv.grams ?? "") !== String(av.grams ?? "")
             ) {
               const token = `variant:weight:${av.admin_graphql_api_id}`;
-              if (!isUndone(event.id, token)) {
+              if (!undone(token)) {
                 const wfmt = (v: RestVariant) =>
                   v.weight !== null && v.weight !== undefined && v.weight !== ""
                     ? `${v.weight} ${(v.weight_unit as string) ?? ""}`.trim()

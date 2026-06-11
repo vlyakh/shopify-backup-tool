@@ -219,8 +219,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             ),
           );
         }
-        suppressNextWebhook(productId);
-        markUndone(changeId, field);
+        await suppressNextWebhook(session.shop, productId);
+        await markUndone(changeId, field);
         return cors(json({ success: true }));
       }
 
@@ -264,8 +264,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         if (errs.length) {
           return cors(json({ error: errs.join(", ") }, { status: 500 }));
         }
-        suppressNextWebhook(productId);
-        markUndone(changeId, field);
+        await suppressNextWebhook(session.shop, productId);
+        await markUndone(changeId, field);
         return cors(json({ success: true }));
       }
 
@@ -316,8 +316,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           return cors(json({ error: errs.join(", ") }, { status: 500 }));
         }
         // Suppress both the main + metafields webhooks the write triggers.
-        suppressWebhooksFor(productId);
-        markUndone(changeId, field);
+        await suppressWebhooksFor(session.shop, productId);
+        await markUndone(changeId, field);
         return cors(json({ success: true }));
       }
 
@@ -381,8 +381,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         ...((result as { errors?: Array<{ message: string }> }).errors ?? []),
       ].map((e) => e.message);
       if (errs.length) return cors(json({ error: errs.join(", ") }, { status: 500 }));
-      suppressNextWebhook(productId);
-      markUndone(changeId, field);
+      await suppressNextWebhook(session.shop, productId);
+      await markUndone(changeId, field);
       return cors(json({ success: true }));
     } catch (error) {
       return cors(
@@ -427,11 +427,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (target.kind === "product") {
       // Images: reconcile media to the backup (best-effort, never blocks).
       if (target.field === "images") {
+        // Media reconcile fires several webhooks → burst window, like
+        // revert-all. Open it BEFORE the writes (echoes can be delivered while
+        // the reconcile is still running) and refresh it after.
+        await suppressWebhooksFor(session.shop, productId);
         const warnings = await reconcileProductImages(
           admin,
           productId,
           data.images?.nodes ?? [],
         );
+        await suppressWebhooksFor(session.shop, productId);
         return cors(
           json({ success: true, warnings: warnings.length ? warnings : undefined }),
         );
@@ -459,6 +464,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         ...((result as { errors?: Array<{ message: string }> }).errors ?? []),
       ].map((e) => e.message);
       if (errs.length) return cors(json({ error: errs.join(", ") }, { status: 500 }));
+      await suppressNextWebhook(session.shop, productId);
       return cors(json({ success: true }));
     }
 
@@ -491,6 +497,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         ...((result as { errors?: Array<{ message: string }> }).errors ?? []),
       ].map((e) => e.message);
       if (errs.length) return cors(json({ error: errs.join(", ") }, { status: 500 }));
+      await suppressNextWebhook(session.shop, productId);
       return cors(json({ success: true }));
     }
 

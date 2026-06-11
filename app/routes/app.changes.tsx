@@ -22,7 +22,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const store = await prisma.store.findUnique({ where: { id: shop } });
 
   const changes = await prisma.changeLog.findMany({
-    where: { storeId: shop },
+    // hidden: false — don't show our own revert echoes as merchant changes
+    where: { storeId: shop, hidden: false },
     orderBy: { changedAt: "desc" },
     take: 100,
   });
