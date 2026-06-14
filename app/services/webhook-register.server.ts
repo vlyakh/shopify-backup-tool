@@ -23,7 +23,10 @@ type AdminGraphql = {
 
 // Namespaces whose metafields we capture. "custom" = admin-created default,
 // "global" = SEO (title_tag / description_tag). Extend as needed.
-const NAMESPACES = ["custom", "global"];
+// Exported so the backup seeds the SAME namespaces into metafield state — a
+// mismatch would make the first post-backup metafields webhook show phantom
+// "added"/"removed" rows.
+export const NAMESPACES = ["custom", "global"];
 
 const CREATE_SUBSCRIPTION = `#graphql
   mutation register(

@@ -3,6 +3,7 @@ import prisma from "../db.server";
 import { storage } from "./storage.server";
 import { createHash } from "crypto";
 import type { ResourceType, BackupTrigger } from "@prisma/client";
+import { NAMESPACES } from "./webhook-register.server";
 
 const PRODUCTS_QUERY = `#graphql
   query GetProducts($cursor: String) {
@@ -362,6 +363,38 @@ async function seedInventoryState(
   }
 }
 
+/**
+ * Seed per-product metafield state (tracked namespaces only) from a backed-up
+ * product, so the FIRST post-backup products/metafields webhook diffs against
+ * the real values instead of an empty baseline — otherwise every existing
+ * metafield (incl. the SEO title_tag/description_tag) shows as "Added".
+ * Mirrors the {store}/state/metafields/{productId}.json shape handleProduct
+ * Metafields reads/writes: { "namespace|key": value(string|null) }.
+ */
+async function seedMetafieldState(
+  storeId: string,
+  productNode: unknown,
+): Promise<void> {
+  const productId = (productNode as { id?: string })?.id;
+  if (!productId) return;
+  const tracked = new Set(NAMESPACES);
+  const nodes = ((productNode as { metafields?: { nodes?: unknown[] } })
+    ?.metafields?.nodes ?? []) as Array<{
+    namespace?: string;
+    key?: string;
+    value?: unknown;
+  }>;
+  const state: Record<string, string | null> = {};
+  for (const mf of nodes) {
+    const ns = String(mf.namespace ?? "");
+    const key = String(mf.key ?? "");
+    if (!ns || !key || !tracked.has(ns)) continue;
+    state[`${ns}|${key}`] = mf.value != null ? String(mf.value) : null;
+  }
+  const statePath = `${storeId}/state/metafields/${encodeURIComponent(productId)}.json`;
+  await storage.put(statePath, JSON.stringify(state));
+}
+
 export async function runBackup(
   admin: AdminApiContext,
   storeId: string,
@@ -399,10 +432,16 @@ export async function runBackup(
     const products = await backupResource(
       admin, storeId, backup.id, PRODUCTS_QUERY, "products", "PRODUCT", onProgress,
       // Best-effort: a seeding hiccup must never fail an otherwise-good backup.
-      (node) =>
-        seedInventoryState(storeId, node).catch((e) =>
-          console.error(`[Backup ${backup.id}] inventory seed failed:`, e),
-        ),
+      async (node) => {
+        try {
+          await Promise.all([
+            seedInventoryState(storeId, node),
+            seedMetafieldState(storeId, node),
+          ]);
+        } catch (e) {
+          console.error(`[Backup ${backup.id}] state seed failed:`, e);
+        }
+      },
     );
     allItems.push(...products.items);
 
