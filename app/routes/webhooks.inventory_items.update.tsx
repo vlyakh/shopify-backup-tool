@@ -8,12 +8,16 @@ import { enqueueWebhook } from "../services/webhook-queue.server";
  * GID and let the processor attribute it to a product (see webhook-queue).
  */
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { shop, topic, payload } = await authenticate.webhook(request);
-  console.log(`[Webhook] ${topic} for ${shop}`);
+  const { shop, payload } = await authenticate.webhook(request);
+  console.log(`[Webhook] inventory_items/update for ${shop}`);
 
+  // Enqueue under the literal marker the processor switches on. Do NOT use the
+  // `topic` from authenticate.webhook — the library normalizes it to upper-snake
+  // ("INVENTORY_ITEMS_UPDATE"), which would never match the processor's
+  // "inventory_items/update" check, so the cost handler would never run.
   await enqueueWebhook(
     shop,
-    topic,
+    "inventory_items/update",
     "PRODUCT", // placeholder; the processor resolves the real product
     String(payload.admin_graphql_api_id),
     "UPDATED",

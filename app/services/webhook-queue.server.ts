@@ -217,8 +217,18 @@ async function handleInventoryItemUpdate(
 
   const ts = Date.now();
   const enc = encodeURIComponent(mapping.productId);
+  // Always carry the tracked keys in `before` (defaulting to null), so the very
+  // first observation of a variant's cost still renders. The history skips
+  // variant subfields ABSENT from the before-snapshot (its guard against the
+  // backup baseline lacking them) — with `...prev` empty on first sight, cost
+  // would be undefined and the first cost change would silently not show.
   const before = {
-    variants: [{ admin_graphql_api_id: mapping.variantId, ...prev }],
+    variants: [
+      {
+        admin_graphql_api_id: mapping.variantId,
+        ...Object.fromEntries(INVENTORY_TRACKED.map((f) => [f, prev[f] ?? null])),
+      },
+    ],
   };
   const after = {
     variants: [{ admin_graphql_api_id: mapping.variantId, ...next }],

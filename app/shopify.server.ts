@@ -71,16 +71,15 @@ const shopify = shopifyApp({
         });
       }
 
-      // Register the metafields-scoped products/update webhook (declarative TOML
-      // can't set metafieldNamespaces). Idempotent + fire-and-forget.
-      const { ensureMetafieldWebhook } = await import(
+      // Register webhooks declarative TOML can't express (metafields) or that
+      // we don't want to depend on `shopify app deploy` to activate
+      // (inventory_items/update → cost/HS/origin). Idempotent + fire-and-forget.
+      const { ensureWebhooks } = await import(
         "./services/webhook-register.server"
       );
-      ensureMetafieldWebhook(admin, process.env.SHOPIFY_APP_URL || "").catch(
-        (err) => {
-          console.error(`[afterAuth] metafield webhook registration failed:`, err);
-        },
-      );
+      ensureWebhooks(admin, process.env.SHOPIFY_APP_URL || "").catch((err) => {
+        console.error(`[afterAuth] webhook registration failed:`, err);
+      });
     },
   },
   ...(process.env.SHOP_CUSTOM_DOMAIN
