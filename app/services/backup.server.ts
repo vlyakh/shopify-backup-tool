@@ -50,6 +50,11 @@ const PRODUCTS_QUERY = `#graphql
               id
               tracked
               requiresShipping
+              unitCost {
+                amount
+              }
+              harmonizedSystemCode
+              countryCodeOfOrigin
               measurement {
                 weight {
                   value
@@ -291,6 +296,7 @@ async function backupResource(
   rootField: string,
   resourceType: ResourceType,
   onProgress?: () => Promise<void>,
+  onNode?: (node: unknown) => Promise<void>,
 ): Promise<BackupResourceResult> {
   const nodes = await paginatedFetch(admin, query, rootField);
   const items: BackupResourceResult["items"] = [];
@@ -303,12 +309,57 @@ async function backupResource(
     const storagePath = `${storeId}/${backupId}/${resourceType}/${encodeURIComponent(resourceId)}.json`;
 
     await storage.put(storagePath, JSON.stringify(node, null, 2));
+    if (onNode) await onNode(node);
 
     items.push({ resourceType, resourceId, title, dataHash, storagePath });
     if (onProgress) await onProgress();
   }
 
   return { count: nodes.length, items };
+}
+
+/**
+ * Canonical cost string so a backup seed and a webhook payload compare equal
+ * regardless of trailing-zero formatting ("550.0" vs "550.00" → "550").
+ */
+function normCost(x: unknown): string | null {
+  if (x == null) return null;
+  const n = Number(x);
+  return Number.isFinite(n) ? String(n) : String(x);
+}
+
+/**
+ * Seed per-variant inventory state (cost / HS code / origin) from a backed-up
+ * product, so the FIRST post-backup cost edit diffs against the real prior value
+ * instead of "—". Mirrors the {store}/state/inventory/{variantId}.json shape that
+ * handleInventoryItemUpdate reads/writes (REST snake_case keys, string | null).
+ */
+async function seedInventoryState(
+  storeId: string,
+  productNode: unknown,
+): Promise<void> {
+  const variants = ((productNode as { variants?: { nodes?: unknown[] } })
+    ?.variants?.nodes ?? []) as Array<{
+    id?: string;
+    inventoryItem?: {
+      unitCost?: { amount?: unknown } | null;
+      harmonizedSystemCode?: unknown;
+      countryCodeOfOrigin?: unknown;
+    } | null;
+  }>;
+  for (const v of variants) {
+    if (!v?.id) continue;
+    const inv = v.inventoryItem ?? {};
+    const state = {
+      cost: normCost(inv.unitCost?.amount),
+      harmonized_system_code:
+        inv.harmonizedSystemCode != null ? String(inv.harmonizedSystemCode) : null,
+      country_code_of_origin:
+        inv.countryCodeOfOrigin != null ? String(inv.countryCodeOfOrigin) : null,
+    };
+    const statePath = `${storeId}/state/inventory/${encodeURIComponent(v.id)}.json`;
+    await storage.put(statePath, JSON.stringify(state));
+  }
 }
 
 export async function runBackup(
@@ -347,6 +398,11 @@ export async function runBackup(
     console.log(`[Backup ${backup.id}] Backing up products...`);
     const products = await backupResource(
       admin, storeId, backup.id, PRODUCTS_QUERY, "products", "PRODUCT", onProgress,
+      // Best-effort: a seeding hiccup must never fail an otherwise-good backup.
+      (node) =>
+        seedInventoryState(storeId, node).catch((e) =>
+          console.error(`[Backup ${backup.id}] inventory seed failed:`, e),
+        ),
     );
     allItems.push(...products.items);
 

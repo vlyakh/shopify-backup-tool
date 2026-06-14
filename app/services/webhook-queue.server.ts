@@ -209,7 +209,13 @@ async function handleInventoryItemUpdate(
   const next: Record<string, string | null> = {};
   let changed = false;
   for (const field of INVENTORY_TRACKED) {
-    const v = payload[field] != null ? String(payload[field]) : null;
+    // Canonicalize cost ("550.00" → "550") so it compares equal to the backup
+    // seed regardless of trailing-zero formatting; keep other fields verbatim.
+    let v = payload[field] != null ? String(payload[field]) : null;
+    if (field === "cost" && v != null) {
+      const n = Number(v);
+      if (Number.isFinite(n)) v = String(n);
+    }
     next[field] = v;
     if (String(prev[field] ?? "") !== String(v ?? "")) changed = true;
   }
