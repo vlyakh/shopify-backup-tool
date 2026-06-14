@@ -152,29 +152,29 @@ function classifyChange(
 }
 
 /**
- * Collapse consecutive edits to the SAME field into one net change, so rapid
- * flip-flopping (Shopify fires a webhook per keystroke/save) reads as a single
- * "— → 56" instead of three toggling rows. Rows are newest-first, so when a run
- * shares a field we pull the "before" back to the oldest edit and target the
- * oldest event for revert (so Undo restores the net-before value). Net-unchanged
- * runs (toggled back to the same value) drop out entirely.
+ * Drop only EXACT-duplicate adjacent rows (same field, same before AND after) —
+ * one save can be delivered as several identical webhooks. Every DISTINCT value
+ * transition is kept as its own row, so changing a field several times shows
+ * each step (A→B, B→C, …) instead of one merged "A→C", and each row reverts to
+ * its own before-value. Rows are newest-first; a duplicate delivery normally
+ * produces no row at all (its before==after diff is empty), so this only guards
+ * the rare case where an identical row slips through.
  */
-function collapseRows(rows: Row[]): Row[] {
-  const out: Array<Row & { merged?: boolean }> = [];
+function dedupeRows(rows: Row[]): Row[] {
+  const out: Row[] = [];
   for (const row of rows) {
     const prev = out[out.length - 1];
-    if (prev && prev.field === row.field) {
-      prev.before = row.before; // older edit's before becomes the net before
-      prev.changeId = row.changeId; // revert to the oldest edit's before-value
-      prev.merged = true;
-    } else {
-      out.push({ ...row });
+    if (
+      prev &&
+      prev.field === row.field &&
+      prev.before === row.before &&
+      prev.after === row.after
+    ) {
+      continue;
     }
+    out.push(row);
   }
-  // Only drop a MERGED run that netted back to no change (A→B→A). A single edit
-  // is always a real change (the field was in changedFields) — never drop it just
-  // because its clipped display happens to match.
-  return out.filter((r) => !r.merged || r.before !== r.after);
+  return out;
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -458,7 +458,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       }
     }
 
-    const collapsed = collapseRows(rows).map((r) => {
+    const collapsed = dedupeRows(rows).map((r) => {
       // Special-cased rows say the action in their label already → no action badge.
       const classified =
         r.field === "published_at"
