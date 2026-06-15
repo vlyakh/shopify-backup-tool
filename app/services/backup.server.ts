@@ -335,6 +335,15 @@ function normCost(x: unknown): string | null {
  * instead of "—". Mirrors the {store}/state/inventory/{variantId}.json shape that
  * handleInventoryItemUpdate reads/writes (REST snake_case keys, string | null).
  */
+// GraphQL WeightUnit enum -> the unit string the inventory_items/update webhook
+// uses, so a seeded weight_unit compares equal to the webhook's.
+const WEIGHT_UNIT_TO_REST: Record<string, string> = {
+  GRAMS: "g",
+  KILOGRAMS: "kg",
+  OUNCES: "oz",
+  POUNDS: "lb",
+};
+
 async function seedInventoryState(
   storeId: string,
   productNode: unknown,
@@ -346,17 +355,24 @@ async function seedInventoryState(
       unitCost?: { amount?: unknown } | null;
       harmonizedSystemCode?: unknown;
       countryCodeOfOrigin?: unknown;
+      measurement?: { weight?: { value?: unknown; unit?: unknown } | null } | null;
     } | null;
   }>;
   for (const v of variants) {
     if (!v?.id) continue;
     const inv = v.inventoryItem ?? {};
+    const w = inv.measurement?.weight;
     const state = {
       cost: normCost(inv.unitCost?.amount),
       harmonized_system_code:
         inv.harmonizedSystemCode != null ? String(inv.harmonizedSystemCode) : null,
       country_code_of_origin:
         inv.countryCodeOfOrigin != null ? String(inv.countryCodeOfOrigin) : null,
+      weight_value: w?.value != null ? normCost(w.value) : null,
+      weight_unit:
+        w?.unit != null
+          ? WEIGHT_UNIT_TO_REST[String(w.unit)] ?? String(w.unit).toLowerCase()
+          : null,
     };
     const statePath = `${storeId}/state/inventory/${encodeURIComponent(v.id)}.json`;
     await storage.put(statePath, JSON.stringify(state));

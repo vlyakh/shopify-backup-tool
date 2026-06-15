@@ -149,7 +149,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             json({ error: "Variant not found in snapshot" }, { status: 404 }),
           );
         }
-        if (!Object.prototype.hasOwnProperty.call(variant, sub)) {
+        // Weight is stored as weight_value/weight_unit (no "weight" key), so the
+        // presence check must look at the field that actually holds the value.
+        const presenceKey = sub === "weight" ? "weight_value" : sub;
+        if (!Object.prototype.hasOwnProperty.call(variant, presenceKey)) {
           return cors(
             json(
               { error: "Field not captured in this snapshot" },
@@ -179,10 +182,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             tracked: variant.inventory_management === "shopify",
           };
         } else if (sub === "weight") {
+          // First observation has no prior weight (null); Number(null) === 0
+          // would silently zero the weight, so refuse rather than write 0.
+          if (variant.weight_value == null || variant.weight_value === "") {
+            return cors(
+              json({ error: "No prior weight to revert to" }, { status: 422 }),
+            );
+          }
           variantInput.inventoryItem = {
             measurement: {
               weight: {
-                value: Number(variant.weight),
+                value: Number(variant.weight_value),
                 unit: WEIGHT_UNITS[String(variant.weight_unit)] ?? "GRAMS",
               },
             },

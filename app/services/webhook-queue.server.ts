@@ -166,10 +166,14 @@ async function fetchInventoryMapping(
 
 // InventoryItem fields not in the product payload (REST keys). We keep their
 // current state per variant and diff old -> new on each inventory webhook.
+// weight_value/weight_unit are flat fields Shopify added to this webhook (weight
+// moved off the variant onto inventoryItem.measurement in 2026-04).
 const INVENTORY_TRACKED = [
   "cost",
   "harmonized_system_code",
   "country_code_of_origin",
+  "weight_value",
+  "weight_unit",
 ];
 
 /**
@@ -209,10 +213,11 @@ async function handleInventoryItemUpdate(
   const next: Record<string, string | null> = {};
   let changed = false;
   for (const field of INVENTORY_TRACKED) {
-    // Canonicalize cost ("550.00" → "550") so it compares equal to the backup
-    // seed regardless of trailing-zero formatting; keep other fields verbatim.
+    // Canonicalize the numeric fields ("550.00" → "550", "435.0" → "435") so a
+    // value compares equal to the backup seed regardless of trailing-zero
+    // formatting; keep string fields (units, codes) verbatim.
     let v = payload[field] != null ? String(payload[field]) : null;
-    if (field === "cost" && v != null) {
+    if ((field === "cost" || field === "weight_value") && v != null) {
       const n = Number(v);
       if (Number.isFinite(n)) v = String(n);
     }

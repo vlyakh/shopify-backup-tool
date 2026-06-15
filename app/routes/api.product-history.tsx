@@ -397,16 +397,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
                 });
               }
             }
-            // Weight (grams in the payload; show in the merchant's unit).
-            if (
-              bv.grams !== undefined &&
-              String(bv.grams ?? "") !== String(av.grams ?? "")
-            ) {
+            // Weight (inventory_items/update: weight_value + weight_unit). Only
+            // the synthetic inventory blob carries these, so products/update
+            // events (no weight_value key) are skipped by the undefined guard.
+            const wkey = (v: RestVariant) =>
+              `${v.weight_value ?? ""}|${v.weight_unit ?? ""}`;
+            if (bv.weight_value !== undefined && wkey(bv) !== wkey(av)) {
               const token = `variant:weight:${av.admin_graphql_api_id}`;
               if (!undone(token)) {
                 const wfmt = (v: RestVariant) =>
-                  v.weight !== null && v.weight !== undefined && v.weight !== ""
-                    ? `${v.weight} ${(v.weight_unit as string) ?? ""}`.trim()
+                  v.weight_value !== null &&
+                  v.weight_value !== undefined &&
+                  v.weight_value !== ""
+                    ? `${v.weight_value} ${(v.weight_unit as string) ?? ""}`.trim()
                     : "—";
                 rows.push({
                   changeId: event.id,
