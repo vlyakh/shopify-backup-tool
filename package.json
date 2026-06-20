@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1055.0",
-    "@azure/storage-blob": "^12.31.0",
+    "@azure/storage-blob": "^12.32.0",
     "@prisma/client": "^6.2.1",
     "@remix-run/dev": "^2.16.1",
     "@remix-run/fs-routes": "^2.16.1",
