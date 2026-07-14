@@ -3,8 +3,12 @@ import { json } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { storage } from "../services/storage.server";
-import { reconcileProductImages } from "../services/product-revert.server";
 import {
+  IMAGE_RECONCILE_SUPPRESS_MS,
+  reconcileProductImages,
+} from "../services/product-revert.server";
+import {
+  clearSuppressionWindow,
   suppressNextWebhook,
   suppressWebhooksFor,
   markUndone,
@@ -134,6 +138,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const productId =
       (before.admin_graphql_api_id as string) || change.resourceId;
 
+    // True while a burst window is armed AHEAD of a write that hasn't
+    // succeeded yet. The error paths below must disarm it — a failed revert
+    // produces no echo, and a leftover window would hide (hidden=true) real
+    // merchant edits made in its remaining ~10s.
+    let preArmedWindow = false;
     try {
       // Variant subfield: token is "variant:<subfield>:<gid>".
       if (field.startsWith("variant:")) {
@@ -206,6 +215,29 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         } else {
           variantInput[sub] = variant[sub]; // price, barcode (REST string passes through)
         }
+        // The INVENTORY_TRACKED subfields echo TWO webhooks: products/update
+        // AND inventory_items/update — and the processor resolves the item to
+        // this same product GID before consuming a mark, so a single
+        // count-mark is burned by whichever echo records first and the other
+        // surfaces as a visible phantom row. Use a short burst window instead
+        // (same shape as the metafield undo below), opened BEFORE the write so
+        // a fast delivery can't beat the arm, and refreshed after.
+        const doubleEcho = [
+          "cost",
+          "harmonized_system_code",
+          "country_code_of_origin",
+          "weight",
+        ].includes(sub);
+        const doubleEchoAnchor = new Date();
+        if (doubleEcho) {
+          await suppressWebhooksFor(
+            session.shop,
+            productId,
+            10_000,
+            doubleEchoAnchor,
+          );
+          preArmedWindow = true;
+        }
         const result = await (
           await admin.graphql(VARIANTS_BULK_UPDATE_MUTATION, {
             variables: { productId, variants: [variantInput] },
@@ -217,6 +249,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           ...((result as { errors?: Array<{ message: string }> }).errors ?? []),
         ].map((e) => e.message);
         if (errs.length) {
+          // The write failed → no echo is coming; disarm the pre-armed window
+          // so it can't hide real merchant edits made right after the error.
+          if (preArmedWindow) {
+            await clearSuppressionWindow(session.shop, productId);
+          }
           const msg = errs.join(", ");
           return cors(
             json(
@@ -229,7 +266,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             ),
           );
         }
-        await suppressNextWebhook(session.shop, productId);
+        preArmedWindow = false; // the write applied — its echoes ARE coming
+        if (doubleEcho) {
+          // Anchor keeps the pre-write armedAt even if a throttled write
+          // outlasted the 10s window — echoes delivered mid-write still match.
+          await suppressWebhooksFor(
+            session.shop,
+            productId,
+            10_000,
+            doubleEchoAnchor,
+          );
+        } else {
+          await suppressNextWebhook(session.shop, productId);
+        }
         await markUndone(changeId, field);
         return cors(json({ success: true }));
       }
@@ -295,6 +344,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           errors?: Array<{ message: string }>;
         };
         let result: MfResult;
+        let typeMissing = false;
         if (value === null || value === undefined || value === "") {
           result = (await (
             await admin.graphql(METAFIELDS_DELETE_MUTATION, {
@@ -310,7 +360,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             key,
             value: String(value),
           };
-          if (mf?.type) input.type = mf.type;
+          // Recreating a DELETED metafield needs `type` — metafieldsSet only
+          // infers it when the metafield still exists or has a definition.
+          // Newer before-blobs carry it; legacy blobs don't, so flag that and
+          // let the write proceed (it still works when the metafield exists),
+          // mapping a type failure below to an error that explains itself.
+          if (mf?.type) input.type = String(mf.type);
+          typeMissing = !input.type;
           result = (await (
             await admin.graphql(METAFIELDS_SET_MUTATION, {
               variables: { metafields: [input] },
@@ -323,6 +379,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           ...(result.errors ?? []),
         ].map((e) => e.message);
         if (errs.length) {
+          if (typeMissing && errs.some((m) => /type/i.test(m))) {
+            return cors(
+              json(
+                {
+                  error: `Can't undo this change: the metafield ${namespace}.${key} no longer exists on the product, and this change was recorded before its type was tracked, so it can't be recreated automatically. Re-add it manually with the value shown in the history. (Shopify: ${errs.join(", ")})`,
+                },
+                { status: 422 },
+              ),
+            );
+          }
           return cors(json({ error: errs.join(", ") }, { status: 500 }));
         }
         // Suppress both the main + metafields webhooks the write triggers.
@@ -395,6 +461,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       await markUndone(changeId, field);
       return cors(json({ success: true }));
     } catch (error) {
+      if (preArmedWindow) {
+        // The write's outcome is unknown/failed, so no echo may ever arrive —
+        // don't leave the pre-armed window hiding real merchant edits.
+        try {
+          await clearSuppressionWindow(session.shop, productId);
+        } catch {
+          // best-effort — the original error below is the one to surface,
+          // and the window self-expires in ~10s anyway
+        }
+      }
       return cors(
         json(
           { error: error instanceof Error ? error.message : "Revert failed" },
@@ -439,14 +515,26 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       if (target.field === "images") {
         // Media reconcile fires several webhooks → burst window, like
         // revert-all. Open it BEFORE the writes (echoes can be delivered while
-        // the reconcile is still running) and refresh it after.
-        await suppressWebhooksFor(session.shop, productId);
+        // the reconcile is still running) and LONG enough to cover the
+        // media-ingestion wait inside the reconcile — with the default 10s the
+        // window expires mid-poll and the products/update echo fired when the
+        // media turn READY records as a visible phantom change. The refresh
+        // after shortens it back to the normal ~10s tail.
+        const imagesAnchor = new Date();
+        await suppressWebhooksFor(
+          session.shop,
+          productId,
+          IMAGE_RECONCILE_SUPPRESS_MS,
+          imagesAnchor,
+        );
         const warnings = await reconcileProductImages(
           admin,
           productId,
           data.images?.nodes ?? [],
         );
-        await suppressWebhooksFor(session.shop, productId);
+        // Anchor keeps the pre-reconcile armedAt even if the reconcile
+        // outlasted its window — echoes delivered during the lapse still match.
+        await suppressWebhooksFor(session.shop, productId, 10_000, imagesAnchor);
         return cors(
           json({ success: true, warnings: warnings.length ? warnings : undefined }),
         );

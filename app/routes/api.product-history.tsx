@@ -244,6 +244,34 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       return parsed;
     };
 
+    // Variant labels ("S / Red") by GID from the latest backup blob (GraphQL
+    // shape), built once on demand. Synthetic inventory events carry a single
+    // variant with only the tracked keys — no options/title — so which variant
+    // changed (and whether the product even has several) must come from the
+    // backup, not the event payload.
+    let backupVariantDescs: Map<string, string> | null = null;
+    const variantDescsFromBackup = async (): Promise<Map<string, string>> => {
+      if (backupVariantDescs) return backupVariantDescs;
+      const blob = await readBlob(latestBackupItem.storagePath);
+      const conn = blob?.variants as
+        | { nodes?: Array<Record<string, unknown>> }
+        | Array<Record<string, unknown>>
+        | undefined;
+      const nodes = (Array.isArray(conn) ? conn : (conn?.nodes ?? [])) ?? [];
+      backupVariantDescs = new Map(
+        nodes.map((v): [string, string] => {
+          const opts = Array.isArray(v.selectedOptions)
+            ? (v.selectedOptions as Array<{ value?: string }>)
+                .map((o) => o.value)
+                .filter(Boolean)
+                .join(" / ")
+            : "";
+          return [String(v.id), opts || (v.title as string) || "Variant"];
+        }),
+      );
+      return backupVariantDescs;
+    };
+
     const rows: Row[] = [];
     for (const event of events) {
       // Edits the merchant already undid via per-field Undo → hide those rows.
@@ -349,7 +377,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         } else if (field === "variants") {
           const bVars = (before?.variants as RestVariant[]) ?? [];
           const aVars = (after.variants as RestVariant[]) ?? [];
-          const multi = bVars.length > 1 || aVars.length > 1;
+          // Synthetic inventory events (cost/weight/HS code, written by
+          // webhook-queue) carry exactly ONE variant either way, so derive
+          // multi-variant-ness and the variant label from the backup instead.
+          const synthetic = /-(inv|cost)-after\.json$/.test(
+            event.afterPath ?? "",
+          );
+          const backupDescs = synthetic ? await variantDescsFromBackup() : null;
+          const multi = backupDescs
+            ? backupDescs.size > 1
+            : bVars.length > 1 || aVars.length > 1;
           for (const av of aVars) {
             const bv = bVars.find(
               (v) => v.admin_graphql_api_id === av.admin_graphql_api_id,
@@ -376,7 +413,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
               }
               continue;
             }
-            const suffix = multi ? ` · ${variantDesc(av)}` : "";
+            const suffix = multi
+              ? ` · ${backupDescs?.get(String(av.admin_graphql_api_id)) ?? variantDesc(av)}`
+              : "";
             for (const [sub, slabel] of VARIANT_FIELDS) {
               // Field absent from the BEFORE snapshot (e.g. the backup baseline
               // doesn't carry taxable / inventory_policy) → not a real change.

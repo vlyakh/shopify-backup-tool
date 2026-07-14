@@ -2,6 +2,7 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import { useEffect, useState } from "react";
 import {
+  useActionData,
   useLoaderData,
   useSubmit,
   useNavigation,
@@ -29,8 +30,8 @@ import { TitleBar } from "@shopify/app-bridge-react";
 import type { BackupInterval } from "@prisma/client";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
-import { runBackup } from "../services/backup.server";
-import { computeInitialNextRunAt } from "../services/scheduler.server";
+import { startBackupIfIdle } from "../services/backup.server";
+import { computeNextRunAt } from "../services/scheduler.server";
 import type { loader as changedProductsLoader } from "./api.changed-products";
 import type { loader as deletedProductsLoader } from "./api.deleted-products";
 
@@ -99,41 +100,73 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { admin, session } = await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
   const shop = session.shop;
 
   const formData = await request.formData();
   const actionType = formData.get("action");
 
   if (actionType === "backup") {
-    const store = await prisma.store.findUnique({ where: { id: shop } });
-    try {
-      const backupId = await runBackup(admin, shop, "MANUAL", store?.plan || "FREE");
-      return json({ success: true, backupId });
-    } catch (error) {
+    // Fire-and-forget: startBackupIfIdle creates a PENDING row and runs the
+    // backup in the background, so this POST returns immediately instead of
+    // holding the request open for the whole catalog walk (proxy idle
+    // timeouts kill long responses on large stores). It also refuses to
+    // stack a second run on top of one already PENDING/IN_PROGRESS.
+    const result = await startBackupIfIdle(shop, "MANUAL");
+    if (!result.started) {
       return json({
         success: false,
-        error: error instanceof Error ? error.message : "Backup failed",
+        error:
+          result.reason === "already-running"
+            ? "A backup is already running — it will appear in the history below when it finishes."
+            : `Could not start backup (${result.reason}).`,
       });
     }
+    return json({ success: true, backupId: result.backupId });
   }
 
   if (actionType === "saveSchedule") {
     const enabled = formData.get("enabled") === "true";
     const interval = (formData.get("interval") as BackupInterval) || "DAILY";
     const storeRec = await prisma.store.findUnique({ where: { id: shop } });
+    // Automatic backups are a paid entitlement — enforce it server-side,
+    // since the schedule card is visible on every plan.
+    if (enabled && (storeRec?.plan ?? "FREE") === "FREE") {
+      return json({
+        success: false,
+        error: "Automatic backups are available on the Standard and Premium plans.",
+      });
+    }
     await prisma.store.update({
       where: { id: shop },
       data: { autoBackupEnabled: enabled },
     });
-    // null nextRunAt while disabled; recompute the next slot when enabling.
+    // null nextRunAt while disabled; recompute the next anchored slot when
+    // enabling (same computeNextRunAt the scheduler uses, so they agree).
+    // Anchor on the stored weeklyDay (timestamps only as a fallback for rows
+    // that predate it — the scheduler's failure path reuses nextRunAt as a
+    // retry timer) so re-saving a WEEKLY schedule keeps its weekday instead
+    // of jumping to the next occurrence of today's weekday.
+    const existing = await prisma.backupSchedule.findUnique({
+      where: { storeId: shop },
+    });
     const nextRunAt = enabled
-      ? computeInitialNextRunAt(storeRec?.autoBackupHour ?? 3, interval)
+      ? computeNextRunAt(
+          interval,
+          storeRec?.autoBackupHour ?? 3,
+          new Date(),
+          existing?.weeklyDay ?? existing?.nextRunAt ?? existing?.lastRunAt,
+        )
       : null;
+    // Lock in the WEEKLY run day; undefined leaves the stored value alone
+    // (Prisma skips undefined fields) so disabling or switching intervals
+    // keeps the weekday memory.
+    const weeklyDay =
+      interval === "WEEKLY" && nextRunAt ? nextRunAt.getUTCDay() : undefined;
     await prisma.backupSchedule.upsert({
       where: { storeId: shop },
-      create: { storeId: shop, enabled, interval, nextRunAt },
-      update: { enabled, interval, nextRunAt },
+      create: { storeId: shop, enabled, interval, nextRunAt, weeklyDay },
+      update: { enabled, interval, nextRunAt, weeklyDay },
     });
     return json({ success: true, scheduleSaved: true });
   }
@@ -141,8 +174,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   return json({ success: false, error: "Unknown action" });
 };
 
-function formatDate(isoString: string): string {
+// The server renders in its own timezone (UTC on Azure) while the browser
+// re-renders in the merchant's, so locale formatting during SSR would produce
+// hydration text mismatches. Until hydration we render a deterministic,
+// labeled UTC string; after mount the merchant-local format takes over.
+function useHydrated(): boolean {
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => {
+    setHydrated(true);
+  }, []);
+  return hydrated;
+}
+
+function formatDate(isoString: string, hydrated: boolean): string {
   const date = new Date(isoString);
+  if (!hydrated) {
+    const iso = date.toISOString();
+    return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+  }
   return date.toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
@@ -154,10 +203,13 @@ function formatDate(isoString: string): string {
 
 // Download a backup's products as CSV. Fetched (App Bridge attaches the session
 // token) then saved via a blob — a plain link wouldn't carry auth.
-async function downloadCsv(backupId: string): Promise<void> {
+// Resolves with an error message to surface, or null on success.
+async function downloadCsv(backupId: string): Promise<string | null> {
   try {
     const res = await fetch(`/api/backup-export/${backupId}`);
-    if (!res.ok) return;
+    if (!res.ok) {
+      return `CSV export failed (HTTP ${res.status}). Try again in a moment.`;
+    }
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -167,8 +219,10 @@ async function downloadCsv(backupId: string): Promise<void> {
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
-  } catch {
-    /* ignore */
+    return null;
+  } catch (error) {
+    console.error("CSV export failed:", error);
+    return "CSV export failed: network error. Try again in a moment.";
   }
 }
 
@@ -223,6 +277,7 @@ type ChangedProduct = {
  */
 function RestoreChanges() {
   const changedFetcher = useFetcher<typeof changedProductsLoader>();
+  const hydrated = useHydrated();
   const [pending, setPending] = useState<Record<string, boolean>>({});
   const [done, setDone] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -301,7 +356,9 @@ function RestoreChanges() {
           : "";
       return [
         item.title || "Unknown product",
-        [formatDate(item.changedAt), changedSummary].filter(Boolean).join(" · "),
+        [formatDate(item.changedAt, hydrated), changedSummary]
+          .filter(Boolean)
+          .join(" · "),
         done[item.backupItemId] ? (
           <Badge key={`d-${item.backupItemId}`} tone="success">
             {done[item.backupItemId]}
@@ -374,6 +431,7 @@ type DeletedProduct = {
  */
 function RecoverDeleted() {
   const fetcher = useFetcher<typeof deletedProductsLoader>();
+  const hydrated = useHydrated();
   const [pending, setPending] = useState<Record<string, boolean>>({});
   const [done, setDone] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -433,7 +491,7 @@ function RecoverDeleted() {
   } else {
     const rows = products.map((item) => [
       item.title || "Unknown product",
-      formatDate(item.deletedAt),
+      formatDate(item.deletedAt, hydrated),
       done[item.backupItemId] ? (
         <Badge key={`d-${item.backupItemId}`} tone="success">
           {done[item.backupItemId]}
@@ -498,16 +556,20 @@ function ScheduleCard({
   initialEnabled,
   initialInterval,
   nextRunAt,
+  planAllows,
 }: {
   initialEnabled: boolean;
   initialInterval: string;
   nextRunAt: string | null;
+  planAllows: boolean;
 }) {
-  const fetcher = useFetcher<{ scheduleSaved?: boolean }>();
+  const fetcher = useFetcher<{ scheduleSaved?: boolean; error?: string }>();
+  const hydrated = useHydrated();
   const [enabled, setEnabled] = useState(initialEnabled);
   const [interval, setIntervalValue] = useState(initialInterval);
   const saving = fetcher.state !== "idle";
   const saved = fetcher.data?.scheduleSaved;
+  const saveError = fetcher.data?.error;
 
   const save = () => {
     fetcher.submit(
@@ -524,15 +586,18 @@ function ScheduleCard({
             Automatic backups
           </Text>
           <Text as="p" variant="bodySm" tone="subdued">
-            {initialEnabled && nextRunAt
-              ? `Next backup ${formatDate(nextRunAt)}.`
-              : "Run a backup automatically on a schedule."}
+            {!planAllows
+              ? "Automatic backups are available on the Standard and Premium plans."
+              : initialEnabled && nextRunAt
+                ? `Next backup ${formatDate(nextRunAt, hydrated)}.`
+                : "Run a backup automatically on a schedule."}
           </Text>
         </BlockStack>
         <Checkbox
           label="Enable automatic backups"
           checked={enabled}
           onChange={setEnabled}
+          disabled={!planAllows}
         />
         <InlineStack gap="300" blockAlign="end">
           <Select
@@ -545,13 +610,23 @@ function ScheduleCard({
             ]}
             value={interval}
             onChange={setIntervalValue}
-            disabled={!enabled}
+            disabled={!enabled || !planAllows}
           />
-          <Button onClick={save} loading={saving} variant="primary">
+          <Button
+            onClick={save}
+            loading={saving}
+            variant="primary"
+            disabled={!planAllows}
+          >
             Save
           </Button>
           {saved ? <Badge tone="success">Saved</Badge> : null}
         </InlineStack>
+        {saveError ? (
+          <Text as="p" variant="bodySm" tone="critical">
+            {saveError}
+          </Text>
+        ) : null}
       </BlockStack>
     </Card>
   );
@@ -560,15 +635,26 @@ function ScheduleCard({
 export default function Index() {
   const { store, backups, totalBackups, lastBackup, schedule } =
     useLoaderData<typeof loader>();
+  const actionData = useActionData<typeof action>();
   const submit = useSubmit();
   const navigation = useNavigation();
   const navigate = useNavigate();
   const { revalidate } = useRevalidator();
+  const hydrated = useHydrated();
+  const [csvError, setCsvError] = useState<string | null>(null);
 
-  // A backup currently running (e.g. the automatic one kicked off at install).
-  const activeBackup = backups.find((b) => b.status === "IN_PROGRESS");
+  // A backup currently queued or running. Manual backups now start in the
+  // background as PENDING (startBackupIfIdle), so count those too.
+  const activeBackup = backups.find(
+    (b) => b.status === "IN_PROGRESS" || b.status === "PENDING",
+  );
   const isActive = Boolean(activeBackup);
   const isBackingUp = navigation.state === "submitting" || isActive;
+
+  // Backup-start failure (e.g. one already running) from the action.
+  // ("error" only exists on failure responses, and `in` narrows the union.)
+  const backupError =
+    actionData && "error" in actionData ? actionData.error : null;
 
   // Poll for live progress while a backup is running.
   useEffect(() => {
@@ -589,7 +675,7 @@ export default function Index() {
         : "Free";
 
   const rows = backups.map((backup) => [
-    formatDate(backup.createdAt),
+    formatDate(backup.createdAt, hydrated),
     <StatusBadge key={backup.id} status={backup.status} />,
     <TriggerBadge key={`t-${backup.id}`} trigger={backup.trigger} />,
     [
@@ -610,7 +696,12 @@ export default function Index() {
         >
           Restore
         </Button>
-        <Button size="slim" onClick={() => downloadCsv(backup.id)}>
+        <Button
+          size="slim"
+          onClick={() => {
+            void downloadCsv(backup.id).then(setCsvError);
+          }}
+        >
           CSV
         </Button>
       </InlineStack>
@@ -642,6 +733,13 @@ export default function Index() {
               </BlockStack>
             </InlineStack>
           </Card>
+        )}
+
+        {/* Backup couldn't start (e.g. one is already running) */}
+        {backupError && (
+          <Banner title="Backup not started" tone="warning">
+            <p>{backupError}</p>
+          </Banner>
         )}
 
         {/* Stats Overview */}
@@ -686,7 +784,9 @@ export default function Index() {
                   {lastBackup ? `${lastBackup.productCount} products` : "Never"}
                 </Text>
                 <Text as="p" variant="bodySm" tone="subdued">
-                  {lastBackup ? formatDate(lastBackup.createdAt) : "Run your first backup"}
+                  {lastBackup
+                    ? formatDate(lastBackup.createdAt, hydrated)
+                    : "Run your first backup"}
                 </Text>
               </BlockStack>
             </Card>
@@ -722,6 +822,7 @@ export default function Index() {
           initialEnabled={store?.autoBackupEnabled ?? false}
           initialInterval={schedule?.interval ?? "DAILY"}
           nextRunAt={schedule?.nextRunAt ?? null}
+          planAllows={(store?.plan ?? "FREE") !== "FREE"}
         />
 
         {/* Backup History */}
@@ -730,6 +831,11 @@ export default function Index() {
             <Text as="h2" variant="headingMd">
               Backup History
             </Text>
+            {csvError && (
+              <Banner tone="critical" onDismiss={() => setCsvError(null)}>
+                <p>{csvError}</p>
+              </Banner>
+            )}
             {backups.length === 0 ? (
               <EmptyState
                 heading="No backups yet"

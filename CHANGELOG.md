@@ -1,5 +1,21 @@
 # @shopify/shopify-app-template-remix
 
+## 2026.07.14
+
+- **Change tracking**: a revert whose writes outlast the initial echo-suppression window no longer records its own webhook echoes as visible phantom changes — window refreshes now preserve the run's original arm time instead of resetting it.
+
+## 2026.07.08
+
+Reliability and completeness fixes across the backup, restore, and change-tracking pipeline:
+
+- **Webhook queue**: crash-safe, deduplicated event processing; phantom queue rows no longer appear in the ledger.
+- **Scheduled backups**: failed runs are recorded and retried, run times stay anchored to the configured schedule, nested resources (variants, images, metafields) are fully paginated, Shopify throttling is retried instead of aborting, retention pruning works, and stalled runs are detected and recovered.
+- **Deleted-product restore**: now restores category, metafields, variant cost, HS code, and country of origin; collection restore includes metafields; image restore waits for Shopify media ingest before finishing; theme restore reports honestly that assets cannot be written back; blog restore surfaces scope guidance.
+- **Dashboard & API**: manual backups run in the background, the per-backup view shows every item with Restore-All including non-product items, Recover Deleted works, the changed-products list is accurate, CSV export is injection-safe and no longer capped, change history is paginated, schedules can be created from Settings, and uninstall/reinstall is handled cleanly.
+- **Admin extensions**: honest error states instead of silently empty lists, per-step revert failures are surfaced, and concurrent undo/revert-all is blocked.
+- **Ops**: deploy guide now enables Always On (idle unload silently stopped scheduled jobs and webhook processing), documents the `AZURE_WEBAPP_PUBLISH_PROFILE` secret the workflow actually uses, and adds the `ENABLE_BACKGROUND_JOBS` flag for scale-out.
+- **Access scopes**: added `write_content` (blog-post restore) and `write_online_store_navigation` (menu restore); removed unused `read_themes`, `read_script_tags`, `read_price_rules`, `read_discounts`, `read_metaobjects`, `read_metaobject_definitions`. Existing installs must re-approve the updated scopes on next app open.
+
 ## 2025.12.11
 
 - [#1201](https://github.com/Shopify/shopify-app-template-remix/pull/1201) Update `@shopify/shopify-app-remix` to v4.1.0 and `@shopify/shopify-app-session-storage-prisma` to v8.0.0, add refresh token fields (`refreshToken` and `refreshTokenExpires`) to Session model in Prisma schema, and adopt the `expiringOfflineAccessTokens` flag for enhanced security through token rotation. See [expiring vs non-expiring offline tokens](https://shopify.dev/docs/apps/build/authentication-authorization/access-tokens/offline-access-tokens#expiring-vs-non-expiring-offline-tokens) for more information.

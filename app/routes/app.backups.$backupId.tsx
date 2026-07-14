@@ -1,7 +1,13 @@
-import type { LoaderFunctionArgs } from "@remix-run/node";
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json, redirect } from "@remix-run/node";
-import { useState } from "react";
-import { useLoaderData, useNavigate } from "@remix-run/react";
+import { useEffect, useState } from "react";
+import {
+  useActionData,
+  useLoaderData,
+  useNavigate,
+  useNavigation,
+  useSubmit,
+} from "@remix-run/react";
 import {
   Page,
   Card,
@@ -15,21 +21,34 @@ import {
   useIndexResourceState,
   EmptyState,
   Banner,
+  DataTable,
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
+import { restoreItems } from "../services/restore.server";
+import { graphqlWithRetry } from "../services/backup.server";
 
 /**
  * Per-backup restore view. Compares a CHOSEN backup's products against the live
  * store and lists which are DELETED (no longer exist) vs CHANGED (exist but
  * edited since the backup), with filtering, multi-select, and bulk restore.
+ * Non-product content (collections, pages, blog posts, redirects, menus) is
+ * listed separately with per-item restore.
  *
  * Deleted → re-created as a draft via /api/restore-product.
  * Changed → reverted to the backup via /api/revert-product.
+ * Other content → restoreItems (restore.server), per item.
  *
- * Change detection uses live updatedAt > backup.createdAt (one batched query),
- * matching the /api/changed-products fallback strategy.
+ * There is deliberately NO "Restore all" action: restoreItems re-CREATES
+ * resources (restoreProduct omits the productSet identifier, and the
+ * collection/page/redirect paths use create mutations), so replaying every
+ * item in the backup would duplicate anything that still exists in the store
+ * instead of reverting it.
+ *
+ * Change detection uses live updatedAt > backup.createdAt (batched nodes()
+ * queries with throttle retry), matching the /api/changed-products fallback
+ * strategy.
  */
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
@@ -42,18 +61,26 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     throw redirect("/app");
   }
 
-  const items = await prisma.backupItem.findMany({
-    where: { backupId, resourceType: "PRODUCT" },
-    select: { id: true, resourceId: true, title: true },
-    take: 250,
+  // Every item, stably ordered — a row cap here would silently hide deleted
+  // products from what is their only recovery path for older backups.
+  const allItems = await prisma.backupItem.findMany({
+    where: { backupId },
+    select: { id: true, resourceType: true, resourceId: true, title: true },
+    orderBy: [{ resourceType: "asc" }, { title: "asc" }],
   });
+  const items = allItems.filter((it) => it.resourceType === "PRODUCT");
 
   // Batch-check live existence + updatedAt for all backed-up products.
+  // nodes() accepts at most 250 ids per call, and each returned node costs
+  // ~1 rate-limit point — on large catalogs the sequential loop drains the
+  // bucket mid-way, so every call goes through graphqlWithRetry (backs off
+  // on THROTTLED/429) instead of failing the whole loader with a 500.
   const liveUpdatedAt = new Map<string, string>();
-  const batchSize = 50;
+  const batchSize = 250;
   for (let i = 0; i < items.length; i += batchSize) {
     const ids = items.slice(i, i + batchSize).map((it) => it.resourceId);
-    const resp = await admin.graphql(
+    const resp = await graphqlWithRetry(
+      admin,
       `#graphql
         query CheckProducts($ids: [ID!]!) {
           nodes(ids: $ids) {
@@ -90,14 +117,72 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   }
 
   return json({
-    backup: { id: backup.id, createdAt: backup.createdAt.toISOString() },
+    backup: {
+      id: backup.id,
+      createdAt: backup.createdAt.toISOString(),
+      errorMessage: backup.errorMessage,
+    },
     deleted,
     changed,
+    otherItems: allItems
+      .filter((it) => it.resourceType !== "PRODUCT")
+      .map((it) => ({
+        id: it.id,
+        resourceType: it.resourceType,
+        title: it.title || it.resourceId,
+      })),
   });
 };
 
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-US", {
+export const action = async ({ request }: ActionFunctionArgs) => {
+  const { admin, session } = await authenticate.admin(request);
+  const formData = await request.formData();
+  const actionType = formData.get("action");
+
+  if (actionType === "restore") {
+    const itemIds = formData.getAll("itemId") as string[];
+    if (itemIds.length === 0) {
+      return json({ success: false, error: "No items selected" });
+    }
+
+    // Provide REST context for resource types that need the REST Admin API
+    // (blog articles and theme assets).
+    const rest = session.accessToken
+      ? { shop: session.shop, accessToken: session.accessToken }
+      : undefined;
+
+    const results = await restoreItems(admin, session.shop, itemIds, rest);
+    const succeeded = results.filter((r) => r.success).length;
+    const failed = results.filter((r) => !r.success).length;
+
+    return json({
+      success: true,
+      results: { succeeded, failed, details: results },
+    });
+  }
+
+  return json({ success: false, error: "Unknown action" });
+};
+
+// The server renders in its own timezone (UTC on Azure) while the browser
+// re-renders in the merchant's, so locale formatting during SSR would produce
+// hydration text mismatches. Until hydration we render a deterministic,
+// labeled UTC string; after mount the merchant-local format takes over.
+function useHydrated(): boolean {
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => {
+    setHydrated(true);
+  }, []);
+  return hydrated;
+}
+
+function formatDate(iso: string, hydrated: boolean): string {
+  const date = new Date(iso);
+  if (!hydrated) {
+    const utc = date.toISOString();
+    return `${utc.slice(0, 10)} ${utc.slice(11, 16)} UTC`;
+  }
+  return date.toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
@@ -105,6 +190,18 @@ function formatDate(iso: string): string {
     minute: "2-digit",
   });
 }
+
+const resourceTypeLabels: Record<string, string> = {
+  PRODUCT: "Product",
+  COLLECTION: "Collection",
+  PAGE: "Page",
+  BLOG_POST: "Blog Post",
+  REDIRECT: "Redirect",
+  THEME: "Theme",
+  MENU: "Menu",
+  POLICY: "Policy",
+  METAOBJECT: "Metaobject",
+};
 
 type Row = {
   id: string;
@@ -114,8 +211,14 @@ type Row = {
 };
 
 export default function BackupRestore() {
-  const { backup, deleted, changed } = useLoaderData<typeof loader>();
+  const { backup, deleted, changed, otherItems } =
+    useLoaderData<typeof loader>();
+  const actionData = useActionData<typeof action>();
   const navigate = useNavigate();
+  const navigation = useNavigation();
+  const submit = useSubmit();
+  const hydrated = useHydrated();
+  const isRestoring = navigation.state === "submitting";
   const [tab, setTab] = useState(0);
   const [pending, setPending] = useState<Record<string, boolean>>({});
   const [done, setDone] = useState<Record<string, string>>({});
@@ -187,6 +290,13 @@ export default function BackupRestore() {
     }
   }
 
+  const handleRestoreItem = (itemId: string) => {
+    const formData = new FormData();
+    formData.set("action", "restore");
+    formData.append("itemId", itemId);
+    submit(formData, { method: "POST" });
+  };
+
   const rowMarkup = rows.map((row, index) => (
     <IndexTable.Row
       id={row.id}
@@ -232,18 +342,55 @@ export default function BackupRestore() {
     </IndexTable.Row>
   ));
 
+  const otherRows = otherItems.map((item) => [
+    <Badge key={`type-${item.id}`}>
+      {resourceTypeLabels[item.resourceType] || item.resourceType}
+    </Badge>,
+    item.title,
+    <Button
+      key={`restore-${item.id}`}
+      size="slim"
+      onClick={() => handleRestoreItem(item.id)}
+      disabled={isRestoring}
+    >
+      Restore
+    </Button>,
+  ]);
+
   return (
     <Page
       backAction={{ content: "Backups", onAction: () => navigate("/app") }}
       title="Restore from backup"
-      subtitle={formatDate(backup.createdAt)}
+      subtitle={formatDate(backup.createdAt, hydrated)}
     >
       <TitleBar title="Restore from backup" />
       <BlockStack gap="400">
+        {backup.errorMessage && (
+          <Banner title="Backup had errors" tone="critical">
+            <p>{backup.errorMessage}</p>
+          </Banner>
+        )}
+        {actionData && "results" in actionData ? (
+          <Banner
+            tone={actionData.results.failed === 0 ? "success" : "warning"}
+          >
+            <p>
+              Restored {actionData.results.succeeded} item(s)
+              {actionData.results.failed > 0
+                ? `, ${actionData.results.failed} failed`
+                : ""}
+              .
+            </p>
+          </Banner>
+        ) : actionData ? (
+          <Banner tone="critical">
+            <p>{actionData.error}</p>
+          </Banner>
+        ) : null}
         <Banner tone="info">
           <p>
             Recover deleted products (re-created as drafts) or undo changes
-            (reverted to this backup). Select rows to restore in bulk.
+            (reverted to this backup). Select rows to restore several at once.
           </p>
         </Banner>
         <Card padding="0">
@@ -276,6 +423,24 @@ export default function BackupRestore() {
             </IndexTable>
           )}
         </Card>
+        {otherItems.length > 0 && (
+          <Card>
+            <BlockStack gap="400">
+              <Text as="h2" variant="headingMd">
+                Other content ({otherItems.length})
+              </Text>
+              <Text as="p" tone="subdued">
+                Collections, pages, blog posts, redirects, and menus from this
+                backup. Restoring re-creates or overwrites the live version.
+              </Text>
+              <DataTable
+                columnContentTypes={["text", "text", "text"]}
+                headings={["Type", "Name", "Action"]}
+                rows={otherRows}
+              />
+            </BlockStack>
+          </Card>
+        )}
       </BlockStack>
     </Page>
   );

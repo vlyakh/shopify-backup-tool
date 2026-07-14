@@ -3,8 +3,14 @@ import { json } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { storage } from "../services/storage.server";
-import { imageSignature } from "../services/image-signature.server";
-import { suppressWebhooksFor } from "../services/revert-bookkeeping.server";
+import {
+  IMAGE_RECONCILE_SUPPRESS_MS,
+  reconcileProductImages,
+} from "../services/product-revert.server";
+import {
+  clearSuppressionWindow,
+  suppressWebhooksFor,
+} from "../services/revert-bookkeeping.server";
 
 /**
  * CORS preflight handler. Admin UI extensions are served cross-origin from
@@ -62,62 +68,6 @@ const VARIANTS_BULK_UPDATE_MUTATION = `#graphql
   }
 `;
 
-// --- Media (image) restore ops, 2026-04 ---
-// There is no in-place "replace media" mutation (productUpdate.media only APPENDS),
-// so reverting images means reconciling: read the product's CURRENT media, delete
-// it, then re-create from the backed-up image URLs. The media `id` stored in the
-// backup is from backup time and is STALE, so deletion must use ids read live here.
-const PRODUCT_MEDIA_QUERY = `#graphql
-  query GetProductMedia($id: ID!) {
-    product(id: $id) {
-      media(first: 250) {
-        nodes {
-          id
-          mediaContentType
-          ... on MediaImage {
-            image {
-              altText
-              width
-              height
-            }
-          }
-        }
-      }
-    }
-  }
-`;
-
-const PRODUCT_DELETE_MEDIA_MUTATION = `#graphql
-  mutation productDeleteMedia($productId: ID!, $mediaIds: [ID!]!) {
-    productDeleteMedia(productId: $productId, mediaIds: $mediaIds) {
-      deletedMediaIds
-      mediaUserErrors {
-        field
-        message
-      }
-    }
-  }
-`;
-
-// CreateMediaInput uses `originalSource` + `mediaContentType` + `alt`. Note
-// `mediaContentType` (NOT `contentType`, which is the ProductSetInput.files
-// spelling). A cdn.shopify.com URL is a valid originalSource and re-ingests a copy.
-const PRODUCT_CREATE_MEDIA_MUTATION = `#graphql
-  mutation productCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
-    productCreateMedia(productId: $productId, media: $media) {
-      media {
-        id
-        status
-        mediaContentType
-      }
-      mediaUserErrors {
-        field
-        message
-      }
-    }
-  }
-`;
-
 /**
  * API endpoint for reverting a product to its backed-up state.
  * Unlike /api/restore-product which creates a new Draft, this OVERWRITES
@@ -159,7 +109,28 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const data = JSON.parse(raw);
   const productId = backupItem.resourceId; // GID like gid://shopify/Product/123
 
+  // True while the pre-armed burst window has no successful write behind it.
+  // The error paths must disarm it — a failed revert produces no echo, and a
+  // leftover window would hide (hidden=true) real merchant edits made in its
+  // remaining ~10s.
+  let preArmedWindow = false;
   try {
+    // The revert fires several writes (product + variants + media), each
+    // echoing a products/update webhook that can be DELIVERED while the run is
+    // still going — and the variant write's inventoryItem fields (cost / HS
+    // code / origin / weight) additionally echo inventory_items/update, which
+    // the processor attributes to this same product GID, so this window hides
+    // those echoes too. consumeSuppression only matches webhooks delivered AT
+    // OR AFTER the mark was armed: open the echo-hiding burst window BEFORE
+    // the first write and refresh it after the last, like the images path in
+    // revert-product-field; arming only at the end would record every
+    // mid-run echo as a visible change. windowAnchor is passed to every
+    // refresh below so a lapsed segment (throttled writes can outlast 10s)
+    // can't reset the armedAt lower bound past echoes already delivered.
+    const windowAnchor = new Date();
+    await suppressWebhooksFor(session.shop, productId, 10_000, windowAnchor);
+    preArmedWindow = true;
+
     // The "Uncategorized" placeholder category (id ".../na") is the "no category"
     // sentinel and is NOT an assignable id, so map it (and a missing category) to
     // null — reverting to Uncategorized means CLEARING the category, not assigning
@@ -229,6 +200,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     ] as Array<{ message: string }>;
 
     if (productErrors.length > 0) {
+      // productUpdate failed (userErrors → nothing applied), so no echo is
+      // coming — disarm the pre-armed window so it can't hide real merchant
+      // edits made right after the error.
+      await clearSuppressionWindow(session.shop, productId);
       return cors(
         json(
           {
@@ -238,6 +213,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         ),
       );
     }
+    // The product write applied — its echo IS coming, so from here on the
+    // window must stay armed even if a later step fails.
+    preArmedWindow = false;
 
     // Step 2: Update variants via bulk update
     const variants = data.variants as
@@ -256,6 +234,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             | {
                 tracked?: boolean;
                 requiresShipping?: boolean;
+                unitCost?: { amount?: unknown } | null;
+                harmonizedSystemCode?: string | null;
+                countryCodeOfOrigin?: string | null;
                 measurement?: { weight?: { value: number; unit: string } };
               }
             | undefined;
@@ -268,6 +249,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           if (inv?.tracked !== undefined) inventoryItem.tracked = inv.tracked;
           if (inv?.requiresShipping !== undefined)
             inventoryItem.requiresShipping = inv.requiresShipping;
+          // Cost / HS code / origin are captured by the backup and tracked in
+          // the ledger (via inventory_items/update), so revert-all must write
+          // them back too — their ledger rows get hidden below as undone.
+          // InventoryItemInput.cost is a Decimal — pass it as a string; an
+          // explicit null clears a value that was added after the backup.
+          if (inv?.unitCost !== undefined) {
+            inventoryItem.cost =
+              inv.unitCost?.amount != null ? String(inv.unitCost.amount) : null;
+          }
+          if (inv?.harmonizedSystemCode !== undefined)
+            inventoryItem.harmonizedSystemCode = inv.harmonizedSystemCode;
+          if (inv?.countryCodeOfOrigin !== undefined)
+            inventoryItem.countryCodeOfOrigin = inv.countryCodeOfOrigin;
           if (inv?.measurement?.weight) {
             inventoryItem.measurement = {
               weight: {
@@ -316,102 +310,37 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }
     }
 
+    // Keep the burst window alive across the media reconcile below — it can
+    // block up to ~2min in waitForMediaReady (media ingestion), and the window
+    // opened before Step 1 is only 10s. Arm it for the poll timeout + slack so
+    // the products/update echo fired when the media turn READY can't land in
+    // an expired-window gap; the refresh after the reconcile shortens it back
+    // to the normal ~10s tail. windowAnchor keeps the run's original armedAt
+    // even if the Step 1-2 segment outlasted the first 10s window, so echoes
+    // delivered during that lapse still match.
+    await suppressWebhooksFor(
+      session.shop,
+      productId,
+      IMAGE_RECONCILE_SUPPRESS_MS,
+      windowAnchor,
+    );
+
     // Step 3: Restore product images (best-effort — must never block the
-    // title/variant revert above, so failures collect into mediaWarnings instead
-    // of throwing). Scope is IMAGE only (the backup captures the legacy `images`
-    // connection; video/3D media isn't backed up).
-    //
-    // Shopify has no in-place "replace media" mutation, so we reconcile against
-    // the CURRENT media (the backup's media ids/urls are stale). Two correctness
-    // details, both learned the hard way:
-    //  - Compare by a STABLE signature (dimensions + altText + order), NOT urls or
-    //    filenames: productCreateMedia re-ingests each image under a NEW url/id
-    //    AND a uniquified filename, so any url/name compare would read a just-
-    //    reverted product as "changed" forever and duplicate images every revert.
-    //  - CREATE first, then delete the old media only once the full backup set was
-    //    accepted — so a failed create never leaves the product imageless.
-    const mediaWarnings: string[] = [];
-    try {
-      const backupImages: Array<{
-        url?: string;
-        altText?: string | null;
-        width?: number | null;
-        height?: number | null;
-      }> = (data.images?.nodes ?? []).filter((img: { url?: string }) => img.url);
-
-      // Read the product's CURRENT image media (node ids to delete; dimensions +
-      // altText to compare against the backup).
-      const mediaResponse = await admin.graphql(PRODUCT_MEDIA_QUERY, {
-        variables: { id: productId },
-      });
-      const mediaResult = await mediaResponse.json();
-      const currentImages = (
-        (mediaResult.data?.product?.media?.nodes ?? []) as Array<{
-          id: string;
-          mediaContentType?: string;
-          image?: {
-            altText?: string | null;
-            width?: number | null;
-            height?: number | null;
-          };
-        }>
-      ).filter((n) => n.mediaContentType === "IMAGE");
-
-      const currentSignature = imageSignature(
-        currentImages.map((n) => n.image ?? {}),
-      );
-      const backupSignature = imageSignature(backupImages);
-
-      if (currentSignature !== backupSignature) {
-        // Create the backed-up images FIRST (this appends), then remove the old
-        // ones — so a create failure never leaves the product imageless.
-        let createdCount = 0;
-        if (backupImages.length > 0) {
-          const createResult = await (
-            await admin.graphql(PRODUCT_CREATE_MEDIA_MUTATION, {
-              variables: {
-                productId,
-                media: backupImages.map((img) => ({
-                  originalSource: img.url,
-                  alt: img.altText || "",
-                  mediaContentType: "IMAGE",
-                })),
-              },
-            })
-          ).json();
-          for (const e of (createResult.data?.productCreateMedia
-            ?.mediaUserErrors ?? []) as Array<{ message: string }>) {
-            mediaWarnings.push(`Image restore: ${e.message}`);
-          }
-          createdCount =
-            createResult.data?.productCreateMedia?.media?.length ?? 0;
-        }
-
-        // Remove the OLD images only when the whole backup set was created (or the
-        // backup had none → an intentionally empty gallery). On a partial/failed
-        // create, keep the originals so nothing is lost (may leave duplicates).
-        const fullyCreated = createdCount === backupImages.length;
-        if (fullyCreated && currentImages.length > 0) {
-          const deleteResult = await (
-            await admin.graphql(PRODUCT_DELETE_MEDIA_MUTATION, {
-              variables: { productId, mediaIds: currentImages.map((n) => n.id) },
-            })
-          ).json();
-          for (const e of (deleteResult.data?.productDeleteMedia
-            ?.mediaUserErrors ?? []) as Array<{ message: string }>) {
-            mediaWarnings.push(`Image delete: ${e.message}`);
-          }
-        } else if (!fullyCreated) {
-          mediaWarnings.push(
-            "Some images could not be restored from the backup; kept the product's existing images.",
-          );
-        }
-      }
-    } catch (mediaError) {
-      mediaWarnings.push(
-        mediaError instanceof Error ? mediaError.message : "Image restore failed",
-      );
-    }
+    // title/variant revert above; the helper never throws and returns failures
+    // as warnings). Scope is IMAGE only (the backup captures the legacy
+    // `images` connection; video/3D media isn't backed up). All the subtle
+    // media logic lives in reconcileProductImages, SHARED with the per-field
+    // images revert so the two paths can't drift: stable signature compare
+    // (urls/ids/filenames change on re-ingestion), create-first, and — since
+    // productCreateMedia only ACCEPTS media and ingestion is async — wait for
+    // every new media to reach READY before deleting the old set, rolling the
+    // new ones back on FAILED so the product is never left imageless (a mere
+    // poll timeout keeps both sets and warns, so a re-run can converge).
+    const mediaWarnings = await reconcileProductImages(
+      admin,
+      productId,
+      data.images?.nodes ?? [],
+    );
 
     // The product now matches this backup, so every change since it is undone:
     // hide those history events, and hide the webhooks our revert just fired
@@ -431,7 +360,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         data: { hidden: true },
       });
     }
-    await suppressWebhooksFor(session.shop, productId);
+    // Refresh the burst window opened before the writes, so echoes Shopify
+    // delivers AFTER this point still land inside it (windowAnchor preserves
+    // the run's original armedAt even across a lapsed segment).
+    await suppressWebhooksFor(session.shop, productId, 10_000, windowAnchor);
 
     return cors(
       json({
@@ -444,6 +376,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }),
     );
   } catch (error) {
+    if (preArmedWindow) {
+      // No write succeeded before the failure, so no echo may ever arrive —
+      // don't leave the pre-armed window hiding real merchant edits.
+      try {
+        await clearSuppressionWindow(session.shop, productId);
+      } catch {
+        // best-effort — the original error below is the one to surface,
+        // and the window self-expires in ~10s anyway
+      }
+    }
     return cors(
       json(
         {

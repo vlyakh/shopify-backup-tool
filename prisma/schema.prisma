@@ -43,6 +43,15 @@ model Store {
   // Webhook settings (premium tier)
   webhooksEnabled Boolean @default(false)
 
+  // Set on app/uninstalled; used for re-baselining on reinstall
+  uninstalledAt DateTime?
+
+  // Last successful OAuth/token exchange (afterAuth). Lets the
+  // app/uninstalled handler ignore late at-least-once deliveries that fired
+  // BEFORE a reinstall — otherwise a retried uninstall webhook would disable
+  // a live install and arm the 30-day purge.
+  lastAuthAt DateTime?
+
   backups         Backup[]
   backupSchedules BackupSchedule[]
 }
@@ -143,6 +152,10 @@ model BackupSchedule {
   cronExpr  String         @default("0 3 * * *") // Daily at 3 AM UTC
   lastRunAt DateTime?
   nextRunAt DateTime?
+  // UTC weekday (0=Sun..6=Sat) a WEEKLY schedule fires on. Stored explicitly
+  // because the scheduler's failure path reuses nextRunAt as an hourly retry
+  // timer, so nextRunAt's weekday can't be trusted as the anchor.
+  weeklyDay Int?
 
   @@unique([storeId])
 }
@@ -172,8 +185,13 @@ model ChangeLog {
   // (e.g. ["title", "variant:price:gid://shopify/ProductVariant/123"])
   undoneFields String[] @default([])
 
+  // WebhookEvent that produced this entry (idempotency key for retries)
+  webhookEventId String?
+
   @@index([storeId, changedAt])
   @@index([storeId, resourceType])
+  @@index([storeId, resourceId])
+  @@index([webhookEventId])
 }
 
 enum ChangeAction {
@@ -196,6 +214,9 @@ model RevertSuppression {
   // "Hide ALL webhooks until this time" burst window (revert-all / metafields)
   windowUntil DateTime?
 
+  // When the current mark (count or window) was armed
+  armedAt DateTime?
+
   updatedAt DateTime @updatedAt
 
   @@id([storeId, resourceId])
@@ -206,6 +227,7 @@ model WebhookEvent {
   id           String        @id @default(cuid())
   storeId      String
   topic        String        // e.g. "products/update", "collections/create"
+  webhookId    String?       @unique // Shopify X-Shopify-Webhook-Id, for redelivery dedup
   resourceType ResourceType
   resourceId   String
   action       ChangeAction
@@ -214,6 +236,7 @@ model WebhookEvent {
   attempts     Int           @default(0)
   lastError    String?
   createdAt    DateTime      @default(now())
+  claimedAt    DateTime?     // set when a processor tick claims the row
   processedAt  DateTime?
 
   @@index([status, createdAt])

@@ -22,6 +22,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   await prisma.backup.deleteMany({ where: { storeId: shop } });
   await prisma.backupSchedule.deleteMany({ where: { storeId: shop } });
   await prisma.store.deleteMany({ where: { id: shop } });
+  // Sessions hold access tokens and staff PII (email, first/last name); this
+  // is the mandated final erasure signal, so remove them even if the
+  // app/uninstalled delivery that normally does it was missed.
+  await prisma.session.deleteMany({ where: { shop } });
 
   return new Response(null, { status: 200 });
 };

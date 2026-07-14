@@ -79,6 +79,13 @@ az webapp create \
   --plan shopify-backup-plan \
   --name shopify-backup-app \
   --runtime "NODE:22-lts"
+
+# Enable Always On (required: Azure unloads idle sites after ~20 minutes,
+# which kills the in-process node-cron scheduler and webhook queue processor)
+az webapp config set \
+  --resource-group shopify-backup-rg \
+  --name shopify-backup-app \
+  --always-on true
 ```
 
 ## 5. Configure Environment Variables
@@ -91,7 +98,7 @@ az webapp config appsettings set \
     DATABASE_URL="postgresql://shopifyadmin:<password>@shopify-backup-db.postgres.database.azure.com:5432/shopify_backup?sslmode=require" \
     SHOPIFY_API_KEY="<your-api-key>" \
     SHOPIFY_API_SECRET="<your-api-secret>" \
-    SCOPES="read_products,write_products,read_content,read_themes,read_online_store_navigation,read_online_store_pages,read_publications,read_script_tags,read_inventory,read_price_rules,read_discounts,read_metaobjects,read_metaobject_definitions" \
+    SCOPES="read_products,write_products,read_content,write_content,read_online_store_navigation,write_online_store_navigation,read_online_store_pages,read_publications,write_publications,read_inventory,write_inventory" \
     SHOPIFY_APP_URL="https://shopify-backup-app.azurewebsites.net" \
     STORAGE_PROVIDER="azure" \
     AZURE_STORAGE_CONNECTION_STRING="<blob-connection-string>" \
@@ -107,19 +114,22 @@ az webapp config set \
   --startup-file "startup.sh"
 ```
 
+**Background jobs and scaling out:** the backup scheduler and webhook queue processor run in-process on every instance and their work claims are not safe across multiple processes. They are enabled by default; if you ever run more than one instance against the same database (scale-out, a warm staging slot, or a separate worker app), set `ENABLE_BACKGROUND_JOBS=false` on every instance except one. Until then, keep the App Service at a single instance.
+
 ## 6. Set Up GitHub Actions Deployment
 
-### Create an Azure Service Principal
+The workflow (`.github/workflows/deploy.yml`) authenticates with the web app's **publish profile** — no service principal or `azure/login` step is involved.
+
+### Download the Publish Profile
 
 ```bash
-az ad sp create-for-rbac \
-  --name "shopify-backup-deploy" \
-  --role contributor \
-  --scopes /subscriptions/<subscription-id>/resourceGroups/shopify-backup-rg \
-  --sdk-auth
+az webapp deployment list-publishing-profiles \
+  --resource-group shopify-backup-rg \
+  --name shopify-backup-app \
+  --xml
 ```
 
-Copy the JSON output.
+Copy the full XML output. If the command reports that basic authentication is disabled, enable SCM basic auth publishing credentials on the web app first (Portal: **Configuration > General settings > SCM Basic Auth Publishing**).
 
 ### Add GitHub Secrets
 
@@ -127,7 +137,7 @@ In your GitHub repo, go to **Settings > Secrets and variables > Actions** and ad
 
 | Secret | Value |
 |---|---|
-| `AZURE_CREDENTIALS` | The full JSON from the service principal command |
+| `AZURE_WEBAPP_PUBLISH_PROFILE` | The full XML from the command above |
 | `AZURE_WEBAPP_NAME` | `shopify-backup-app` |
 
 Push to `main` and the workflow will deploy automatically.

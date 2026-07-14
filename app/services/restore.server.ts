@@ -125,6 +125,20 @@ const MENU_CREATE_MUTATION = `#graphql
   }
 `;
 
+const METAFIELDS_SET_MUTATION = `#graphql
+  mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
+    metafieldsSet(metafields: $metafields) {
+      metafields {
+        id
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
 interface RestoreResult {
   success: boolean;
   resourceType: ResourceType;
@@ -132,6 +146,77 @@ interface RestoreResult {
   title: string;
   newResourceId?: string;
   error?: string;
+}
+
+/**
+ * Map backed-up metafields ({ nodes: [{ namespace, key, value, type }] }) to
+ * MetafieldInput. Skips entries that are never writable by this app and would
+ * fail the WHOLE create mutation:
+ * - entries missing a type (older backups didn't capture it)
+ * - "shopify--*" and the plain "shopify" namespace (reserved; category
+ *   metafields like shopify.color-pattern are only writable when the assigned
+ *   category defines that attribute, which a restore can't guarantee)
+ * - "app--<id>--*": other apps' reserved namespaces. The backup's metafields
+ *   query captures PUBLIC_READ/MERCHANT_READ entries, but only the owning app
+ *   can write them.
+ * Reference-type metafields whose target no longer exists (e.g. a deleted
+ * product's self-references) can't be detected here — the callers handle
+ * those by retrying the create without metafields (see retry comments).
+ */
+function buildMetafieldInputs(
+  data: Record<string, unknown>,
+): Array<{ namespace: string; key: string; value: string; type: string }> {
+  const metafields = data.metafields as
+    | { nodes?: Array<{ namespace?: string; key?: string; value?: string; type?: string }> }
+    | undefined;
+  return (metafields?.nodes ?? [])
+    .filter(
+      (mf) =>
+        mf.namespace &&
+        mf.key &&
+        mf.type &&
+        mf.namespace !== "shopify" &&
+        !mf.namespace.startsWith("shopify--") &&
+        !mf.namespace.startsWith("app--"),
+    )
+    .map((mf) => ({
+      namespace: mf.namespace as string,
+      key: mf.key as string,
+      value: mf.value ?? "",
+      type: mf.type as string,
+    }));
+}
+
+/**
+ * Best-effort restore of metafields, one metafieldsSet call per entry, used
+ * after an atomic create mutation had to be retried without its metafields.
+ * Sending them individually means one unwritable entry (e.g. a reference to a
+ * since-deleted resource) only loses itself. Failures are logged, never
+ * thrown, and never fail the restore.
+ */
+async function setMetafieldsBestEffort(
+  admin: AdminApiContext,
+  ownerId: string,
+  metafields: Array<{ namespace: string; key: string; value: string; type: string }>,
+): Promise<void> {
+  for (const mf of metafields) {
+    try {
+      const response = await admin.graphql(METAFIELDS_SET_MUTATION, {
+        variables: { metafields: [{ ownerId, ...mf }] },
+      });
+      const json = await response.json();
+      const errors = json.data?.metafieldsSet?.userErrors;
+      if (errors?.length) {
+        console.warn(
+          `[Restore] Skipped metafield ${mf.namespace}.${mf.key} on ${ownerId}: ${errors.map((e: { message: string }) => e.message).join(", ")}`,
+        );
+      }
+    } catch (error) {
+      console.warn(
+        `[Restore] Skipped metafield ${mf.namespace}.${mf.key} on ${ownerId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
 }
 
 async function restoreProduct(
@@ -162,6 +247,20 @@ async function restoreProduct(
       input.seo = data.seo;
     }
 
+    // Category (taxonomy id). The "Uncategorized" placeholder (id ".../na") is
+    // the "no category" sentinel and is NOT an assignable id, so skip it —
+    // omitting category on a new product means uncategorized anyway.
+    const categoryId = (data.category as { id?: string } | null | undefined)?.id;
+    if (categoryId && !categoryId.endsWith("/na")) {
+      input.category = categoryId;
+    }
+
+    // Metafields
+    const metafields = buildMetafieldInputs(data);
+    if (metafields.length) {
+      input.metafields = metafields;
+    }
+
     // Options
     const options = data.options as Array<{ name: string; position?: number; values: string[] }> | undefined;
     if (options?.length) {
@@ -178,12 +277,23 @@ async function restoreProduct(
     if (variants?.nodes?.length) {
       input.variants = variants.nodes.map((v) => {
         const inv = v.inventoryItem as
-          | { tracked?: boolean; requiresShipping?: boolean; measurement?: { weight?: { value: number; unit: string } } }
+          | {
+              tracked?: boolean;
+              requiresShipping?: boolean;
+              unitCost?: { amount?: unknown } | null;
+              harmonizedSystemCode?: string | null;
+              countryCodeOfOrigin?: string | null;
+              measurement?: { weight?: { value: number; unit: string } };
+            }
           | undefined;
 
         const inventoryItem: Record<string, unknown> = {};
         if (inv?.tracked !== undefined) inventoryItem.tracked = inv.tracked;
         if (inv?.requiresShipping !== undefined) inventoryItem.requiresShipping = inv.requiresShipping;
+        // InventoryItemInput.cost is a Decimal — pass the backed-up amount as a string.
+        if (inv?.unitCost?.amount != null) inventoryItem.cost = String(inv.unitCost.amount);
+        if (inv?.harmonizedSystemCode != null) inventoryItem.harmonizedSystemCode = inv.harmonizedSystemCode;
+        if (inv?.countryCodeOfOrigin != null) inventoryItem.countryCodeOfOrigin = inv.countryCodeOfOrigin;
         if (inv?.measurement?.weight) {
           inventoryItem.measurement = {
             weight: { value: inv.measurement.weight.value, unit: inv.measurement.weight.unit },
@@ -216,11 +326,28 @@ async function restoreProduct(
       input.files = files;
     }
 
-    const response = await admin.graphql(PRODUCT_SET_MUTATION, {
+    let response = await admin.graphql(PRODUCT_SET_MUTATION, {
       variables: { input },
     });
-    const json = await response.json();
-    const result = json.data?.productSet;
+    let json = await response.json();
+    let result = json.data?.productSet;
+
+    // productSet is atomic: one unwritable metafield (e.g. a reference-type
+    // metafield pointing at a since-deleted resource — guaranteed for a
+    // deleted product's self-references) aborts the ENTIRE create. If the
+    // first attempt failed and metafields were included, retry without them
+    // so the product itself still restores (as it did before metafields were
+    // added to the input), then best-effort set them individually below.
+    let deferredMetafields: typeof metafields | null = null;
+    if (result?.userErrors?.length && metafields.length) {
+      delete input.metafields;
+      deferredMetafields = metafields;
+      response = await admin.graphql(PRODUCT_SET_MUTATION, {
+        variables: { input },
+      });
+      json = await response.json();
+      result = json.data?.productSet;
+    }
 
     if (result?.userErrors?.length) {
       return {
@@ -232,12 +359,17 @@ async function restoreProduct(
       };
     }
 
+    const newProductId = result?.product?.id;
+    if (deferredMetafields?.length && newProductId) {
+      await setMetafieldsBestEffort(admin, newProductId, deferredMetafields);
+    }
+
     return {
       success: true,
       resourceType: "PRODUCT",
       resourceId,
       title,
-      newResourceId: result?.product?.id,
+      newResourceId: newProductId,
     };
   } catch (error) {
     return {
@@ -392,15 +524,35 @@ async function restoreCollection(
       };
     }
 
+    // Metafields (same reserved-namespace/missing-type filtering as products)
+    const metafields = buildMetafieldInputs(data);
+    if (metafields.length) {
+      input.metafields = metafields;
+    }
+
     // Restore as unpublished - no publications
     // The collectionCreate mutation creates unpublished by default when no
     // publications are specified.
 
-    const response = await admin.graphql(COLLECTION_CREATE_MUTATION, {
+    let response = await admin.graphql(COLLECTION_CREATE_MUTATION, {
       variables: { input },
     });
-    const json = await response.json();
-    const result = json.data?.collectionCreate;
+    let json = await response.json();
+    let result = json.data?.collectionCreate;
+
+    // collectionCreate is atomic like productSet: one unwritable metafield
+    // aborts the whole create. Retry without metafields, then best-effort set
+    // them individually below (see restoreProduct for the rationale).
+    let deferredMetafields: typeof metafields | null = null;
+    if (result?.userErrors?.length && metafields.length) {
+      delete input.metafields;
+      deferredMetafields = metafields;
+      response = await admin.graphql(COLLECTION_CREATE_MUTATION, {
+        variables: { input },
+      });
+      json = await response.json();
+      result = json.data?.collectionCreate;
+    }
 
     if (result?.userErrors?.length) {
       return {
@@ -412,6 +564,11 @@ async function restoreCollection(
       };
     }
 
+    const newCollectionId = result?.collection?.id;
+    if (deferredMetafields?.length && newCollectionId) {
+      await setMetafieldsBestEffort(admin, newCollectionId, deferredMetafields);
+    }
+
     console.log(`[Restore] Collection "${title}" created${ruleSet?.rules?.length ? " (smart collection)" : " (custom collection)"}`);
 
     return {
@@ -419,7 +576,7 @@ async function restoreCollection(
       resourceType: "COLLECTION",
       resourceId,
       title,
-      newResourceId: result?.collection?.id,
+      newResourceId: newCollectionId,
     };
   } catch (error) {
     return {
@@ -513,12 +670,17 @@ async function restoreBlogPost(
       newResourceId: `gid://shopify/Article/${responseBody.article.id}`,
     };
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     return {
       success: false,
       resourceType: "BLOG_POST",
       resourceId,
       title,
-      error: error instanceof Error ? error.message : String(error),
+      // The only REST call here is the article POST — a 403 means the
+      // write_content scope hasn't been granted yet.
+      error: message.includes("(403)")
+        ? `${message} — creating blog articles requires the write_content scope; the merchant must re-approve the app's permissions before blog posts can be restored.`
+        : message,
     };
   }
 }
@@ -613,115 +775,18 @@ async function restoreTheme(
   const title = (data.name as string) || (data.title as string) || "Theme";
   const resourceId = data.id as string;
 
-  try {
-    // Theme restore focuses on settings files (settings_data.json, etc.)
-    // via the REST Asset API. We write theme asset files back to a target theme.
-    //
-    // The backup data should contain:
-    //   - id: the theme GID or numeric ID
-    //   - name/title: theme name
-    //   - assets: array of { key, value } representing theme files
-
-    const assets = data.assets as Array<{ key: string; value?: string; attachment?: string }> | undefined;
-
-    if (!assets?.length) {
-      return {
-        success: false,
-        resourceType: "THEME",
-        resourceId,
-        title,
-        error: "No theme assets found in backup data",
-      };
-    }
-
-    // Extract numeric theme ID from GID if needed
-    const themeNumericId = resourceId.includes("/")
-      ? resourceId.split("/").pop()
-      : resourceId;
-
-    // Verify the theme still exists before writing assets to it.
-    // Themes cannot be created via the API, so if it's gone we must inform the user.
-    let themeExists = false;
-    try {
-      const themeBody = await shopifyRestRequest(
-        rest,
-        "GET",
-        `themes/${themeNumericId}.json`,
-      ) as { theme?: { id: number } };
-      themeExists = !!themeBody.theme?.id;
-    } catch {
-      themeExists = false;
-    }
-
-    if (!themeExists) {
-      return {
-        success: false,
-        resourceType: "THEME",
-        resourceId,
-        title,
-        error: `Theme ${themeNumericId} no longer exists. Theme assets can only be restored to an existing theme. Create a theme first, then restore assets to it.`,
-      };
-    }
-
-    // Restore each asset via the REST Asset API
-    const errors: string[] = [];
-    let restoredCount = 0;
-
-    for (const asset of assets) {
-      try {
-        const assetData: Record<string, string> = { key: asset.key };
-
-        // Assets can be text (value) or binary (attachment as base64)
-        if (asset.value !== undefined) {
-          assetData.value = asset.value;
-        } else if (asset.attachment !== undefined) {
-          assetData.attachment = asset.attachment;
-        } else {
-          continue; // Skip assets with no content
-        }
-
-        await shopifyRestRequest(
-          rest,
-          "PUT",
-          `themes/${themeNumericId}/assets.json`,
-          { asset: assetData },
-        );
-        restoredCount++;
-      } catch (assetError) {
-        const message = assetError instanceof Error ? assetError.message : String(assetError);
-        errors.push(`${asset.key}: ${message}`);
-      }
-    }
-
-    if (errors.length > 0 && restoredCount === 0) {
-      return {
-        success: false,
-        resourceType: "THEME",
-        resourceId,
-        title,
-        error: `All asset restores failed. First error: ${errors[0]}`,
-      };
-    }
-
-    console.log(`[Restore] Theme "${title}" - restored ${restoredCount}/${assets.length} assets${errors.length > 0 ? ` (${errors.length} failed)` : ""}`);
-
-    return {
-      success: true,
-      resourceType: "THEME",
-      resourceId,
-      title,
-      newResourceId: resourceId,
-      ...(errors.length > 0 ? { error: `Partially restored: ${errors.length} asset(s) failed` } : {}),
-    };
-  } catch (error) {
-    return {
-      success: false,
-      resourceType: "THEME",
-      resourceId,
-      title,
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
+  // Writing theme assets requires the REST Asset API, which Shopify restricted
+  // in 2023 (and the app has no write_themes scope), so the old PUT-based
+  // restore failed 100% of the time. Fail fast with guidance instead of
+  // calling the API — the backed-up theme files remain available via export.
+  return {
+    success: false,
+    resourceType: "THEME",
+    resourceId,
+    title,
+    error:
+      "Theme restore is not supported: Shopify restricted the theme asset write API. Use the backup export to retrieve theme files.",
+  };
 }
 
 /**

@@ -10,7 +10,7 @@ import { enqueueWebhook } from "../services/webhook-queue.server";
  * routes it to the metafield diff.
  */
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { shop, payload } = await authenticate.webhook(request);
+  const { shop, payload, webhookId } = await authenticate.webhook(request);
   console.log(`[Webhook] products/metafields for ${shop}`);
 
   await enqueueWebhook(
@@ -20,6 +20,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     String(payload.admin_graphql_api_id),
     "UPDATED",
     payload,
+    webhookId,
   );
 
   return new Response(null, { status: 200 });

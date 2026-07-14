@@ -25,25 +25,30 @@ function RestoreChangedAction() {
   const { close } = useApi();
   const [changedProducts, setChangedProducts] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [restoring, setRestoring] = useState({});
   const [reverted, setReverted] = useState({});
   const [errors, setErrors] = useState({});
 
-  useEffect(() => {
-    async function fetchChanged() {
-      try {
-        const response = await fetch("/api/changed-products");
-        if (response.ok) {
-          const result = await response.json();
-          setChangedProducts(result.products || []);
-        }
-      } catch (error) {
-        console.error("Failed to fetch changed products:", error);
-      } finally {
-        setLoading(false);
+  async function fetchChanged() {
+    setLoading(true);
+    setLoadError(false);
+    try {
+      const response = await fetch("/api/changed-products");
+      if (!response.ok) {
+        throw new Error(`Changed-products request failed (${response.status})`);
       }
+      const result = await response.json();
+      setChangedProducts(result.products || []);
+    } catch (error) {
+      console.error("Failed to fetch changed products:", error);
+      setLoadError(true);
+    } finally {
+      setLoading(false);
     }
+  }
 
+  useEffect(() => {
     fetchChanged();
   }, []);
 
@@ -65,10 +70,16 @@ function RestoreChangedAction() {
       const result = await response.json();
 
       if (response.ok && result.success) {
+        // Partial failure: the route reports variant and media steps that
+        // failed even though the product-level revert succeeded.
+        const warnings = [
+          ...(result.variantWarnings || []),
+          ...(result.mediaWarnings || []),
+        ];
         setReverted((prev) => ({
           ...prev,
-          [backupItemId]: result.variantWarnings
-            ? `Reverted (${result.variantWarnings.length} variant warning${result.variantWarnings.length !== 1 ? "s" : ""})`
+          [backupItemId]: warnings.length
+            ? `Reverted (${warnings.length} warning${warnings.length !== 1 ? "s" : ""})`
             : "Reverted",
         }));
       } else {
@@ -91,8 +102,27 @@ function RestoreChangedAction() {
     return (
       <AdminAction title="Restore Changed Products">
         <BlockStack gap="base">
-          <ProgressIndicator size="small" />
+          <ProgressIndicator size="small-200" />
           <Text>Checking for changed products...</Text>
+        </BlockStack>
+      </AdminAction>
+    );
+  }
+
+  // A failed request must never render the reassuring "everything matches"
+  // empty state.
+  if (loadError) {
+    return (
+      <AdminAction
+        title="Restore Changed Products"
+        secondaryAction={<Button onPress={close}>Close</Button>}
+      >
+        <BlockStack gap="base">
+          <Text>
+            Couldn't check for changed products — this does not mean everything
+            matches your backup. Check your connection and try again.
+          </Text>
+          <Button onPress={fetchChanged}>Retry</Button>
         </BlockStack>
       </AdminAction>
     );
@@ -106,7 +136,7 @@ function RestoreChangedAction() {
       >
         <BlockStack gap="base">
           <Text>All products match your last backup. Nothing to restore.</Text>
-          <Text appearance="subdued" size="small">
+          <Text>
             Products that have been modified since your last backup will appear
             here. Run backups regularly to keep your data protected.
           </Text>
@@ -121,7 +151,7 @@ function RestoreChangedAction() {
       secondaryAction={<Button onPress={close}>Close</Button>}
     >
       <BlockStack gap="base">
-        <Text appearance="subdued" size="small">
+        <Text>
           {changedProducts.length} product
           {changedProducts.length !== 1 ? "s" : ""} changed since your last
           backup. Reverting overwrites the product with the backed-up version.
@@ -137,7 +167,7 @@ function RestoreChangedAction() {
             >
               <BlockStack gap="none">
                 <Text fontWeight="bold">{product.title}</Text>
-                <Text appearance="subdued" size="small">
+                <Text>
                   Changed {formatDate(product.changedAt)}
                   {product.changeCount > 1
                     ? ` \u00b7 ${product.changeCount} change${product.changeCount !== 1 ? "s" : ""}`
@@ -149,13 +179,19 @@ function RestoreChangedAction() {
               </BlockStack>
 
               {reverted[product.backupItemId] ? (
-                <Badge tone="success">{reverted[product.backupItemId]}</Badge>
+                <Badge
+                  tone={
+                    reverted[product.backupItemId] === "Reverted"
+                      ? "success"
+                      : "warning"
+                  }
+                >
+                  {reverted[product.backupItemId]}
+                </Badge>
               ) : errors[product.backupItemId] ? (
                 <BlockStack gap="none">
                   <Badge tone="critical">Failed</Badge>
-                  <Text appearance="subdued" size="small">
-                    {errors[product.backupItemId]}
-                  </Text>
+                  <Text>{errors[product.backupItemId]}</Text>
                 </BlockStack>
               ) : (
                 <Button

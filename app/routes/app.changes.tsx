@@ -1,19 +1,24 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { useLoaderData } from "@remix-run/react";
+import { useLoaderData, useSearchParams } from "@remix-run/react";
+import { useEffect, useState } from "react";
 import {
   Page,
   Card,
   Text,
   BlockStack,
+  InlineStack,
   Badge,
   DataTable,
   EmptyState,
   Banner,
+  Pagination,
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
+
+const PAGE_SIZE = 50;
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -21,15 +26,33 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const store = await prisma.store.findUnique({ where: { id: shop } });
 
+  // hidden: false — don't show our own revert echoes as merchant changes
+  const where = { storeId: shop, hidden: false };
+  const totalChanges = await prisma.changeLog.count({ where });
+  const totalPages = Math.max(1, Math.ceil(totalChanges / PAGE_SIZE));
+
+  const requestedPage = parseInt(
+    new URL(request.url).searchParams.get("page") ?? "1",
+    10,
+  );
+  const page = Math.min(
+    Math.max(1, Number.isNaN(requestedPage) ? 1 : requestedPage),
+    totalPages,
+  );
+
   const changes = await prisma.changeLog.findMany({
-    // hidden: false — don't show our own revert echoes as merchant changes
-    where: { storeId: shop, hidden: false },
-    orderBy: { changedAt: "desc" },
-    take: 100,
+    where,
+    // id tiebreak keeps pages stable when many rows share a changedAt
+    orderBy: [{ changedAt: "desc" }, { id: "desc" }],
+    skip: (page - 1) * PAGE_SIZE,
+    take: PAGE_SIZE,
   });
 
   return json({
     isPremium: store?.plan === "PREMIUM",
+    page,
+    totalPages,
+    totalChanges,
     changes: changes.map((c) => ({
       id: c.id,
       resourceType: c.resourceType,
@@ -41,8 +64,25 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   });
 };
 
-function formatDate(isoString: string): string {
-  return new Date(isoString).toLocaleDateString("en-US", {
+// The server renders in its own timezone (UTC on Azure) while the browser
+// re-renders in the merchant's, so locale formatting during SSR would produce
+// hydration text mismatches. Until hydration we render a deterministic,
+// labeled UTC string; after mount the merchant-local format takes over.
+function useHydrated(): boolean {
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => {
+    setHydrated(true);
+  }, []);
+  return hydrated;
+}
+
+function formatDate(isoString: string, hydrated: boolean): string {
+  const date = new Date(isoString);
+  if (!hydrated) {
+    const iso = date.toISOString();
+    return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+  }
+  return date.toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
     hour: "2-digit",
@@ -61,7 +101,10 @@ function ActionBadge({ action }: { action: string }) {
 }
 
 export default function Changes() {
-  const { isPremium, changes } = useLoaderData<typeof loader>();
+  const { isPremium, changes, page, totalPages, totalChanges } =
+    useLoaderData<typeof loader>();
+  const [, setSearchParams] = useSearchParams();
+  const hydrated = useHydrated();
 
   if (!isPremium) {
     return (
@@ -83,7 +126,7 @@ export default function Changes() {
   }
 
   const rows = changes.map((change) => [
-    formatDate(change.changedAt),
+    formatDate(change.changedAt, hydrated),
     <ActionBadge key={change.id} action={change.action} />,
     <Badge key={`type-${change.id}`}>{change.resourceType}</Badge>,
     change.resourceId.replace("gid://shopify/", ""),
@@ -100,9 +143,9 @@ export default function Changes() {
         <Card>
           <BlockStack gap="400">
             <Text as="h2" variant="headingMd">
-              Recent Changes ({changes.length})
+              Recent Changes ({totalChanges})
             </Text>
-            {changes.length === 0 ? (
+            {totalChanges === 0 ? (
               <EmptyState
                 heading="No changes tracked yet"
                 image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
@@ -110,11 +153,24 @@ export default function Changes() {
                 <p>Changes to your products and collections will appear here in real-time.</p>
               </EmptyState>
             ) : (
-              <DataTable
-                columnContentTypes={["text", "text", "text", "text", "text"]}
-                headings={["When", "Action", "Type", "Resource", "Changed Fields"]}
-                rows={rows}
-              />
+              <BlockStack gap="300">
+                <DataTable
+                  columnContentTypes={["text", "text", "text", "text", "text"]}
+                  headings={["When", "Action", "Type", "Resource", "Changed Fields"]}
+                  rows={rows}
+                />
+                {totalPages > 1 && (
+                  <InlineStack align="center">
+                    <Pagination
+                      label={`Page ${page} of ${totalPages}`}
+                      hasPrevious={page > 1}
+                      onPrevious={() => setSearchParams({ page: String(page - 1) })}
+                      hasNext={page < totalPages}
+                      onNext={() => setSearchParams({ page: String(page + 1) })}
+                    />
+                  </InlineStack>
+                )}
+              </BlockStack>
             )}
           </BlockStack>
         </Card>

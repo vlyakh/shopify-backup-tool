@@ -8,7 +8,6 @@ import {
   Text,
   Button,
   Badge,
-  Divider,
 } from "@shopify/ui-extensions-react/admin";
 
 function formatTimeAgo(dateString) {
@@ -27,29 +26,33 @@ function formatTimeAgo(dateString) {
 }
 
 function BackupStatusBlock() {
-  const { data, navigation } = useApi();
+  const { data } = useApi();
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
 
   const productId = data.selected?.[0]?.id;
 
+  async function fetchStatus() {
+    setLoading(true);
+    setLoadError(false);
+    try {
+      const response = await fetch(`/api/backup-status?resourceId=${encodeURIComponent(productId)}`);
+      if (!response.ok) {
+        throw new Error(`Status request failed (${response.status})`);
+      }
+      const result = await response.json();
+      setStatus(result);
+    } catch (error) {
+      console.error("Failed to fetch backup status:", error);
+      setLoadError(true);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   useEffect(() => {
     if (!productId) return;
-
-    async function fetchStatus() {
-      try {
-        const response = await fetch(`/api/backup-status?resourceId=${encodeURIComponent(productId)}`);
-        if (response.ok) {
-          const result = await response.json();
-          setStatus(result);
-        }
-      } catch (error) {
-        console.error("Failed to fetch backup status:", error);
-      } finally {
-        setLoading(false);
-      }
-    }
-
     fetchStatus();
   }, [productId]);
 
@@ -57,6 +60,22 @@ function BackupStatusBlock() {
     return (
       <AdminBlock title="Backup Status">
         <Text>Loading...</Text>
+      </AdminBlock>
+    );
+  }
+
+  // A failed request is NOT "not protected" — never show the warning state
+  // for a backend/network error.
+  if (loadError) {
+    return (
+      <AdminBlock title="Backup Status">
+        <BlockStack gap="small">
+          <Text>
+            Couldn't load the backup status — this does not mean the product
+            is unprotected. Check your connection and try again.
+          </Text>
+          <Button onPress={fetchStatus}>Retry</Button>
+        </BlockStack>
       </AdminBlock>
     );
   }
@@ -72,31 +91,24 @@ function BackupStatusBlock() {
             {isProtected ? "Protected" : "Not Protected"}
           </Badge>
           {isProtected && (
-            <Text appearance="subdued" size="small">
+            <Text>
               Last backup: {formatTimeAgo(status.lastBackedUp)}
             </Text>
           )}
         </InlineStack>
 
         {changeCount > 0 && (
-          <Text appearance="subdued" size="small">
+          <Text>
             {changeCount} change{changeCount !== 1 ? "s" : ""} since last backup
           </Text>
         )}
 
         {!isProtected && (
-          <Text appearance="subdued" size="small">
-            This product has not been backed up yet. Run a backup from the app to protect it.
+          <Text>
+            This product has not been backed up yet. Run a backup from the
+            Store Backup app to protect it.
           </Text>
         )}
-
-        <Divider />
-
-        <Button
-          onPress={() => navigation.navigate("app:backups")}
-        >
-          View Backups
-        </Button>
       </BlockStack>
     </AdminBlock>
   );

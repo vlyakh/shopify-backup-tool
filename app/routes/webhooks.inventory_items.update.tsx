@@ -8,7 +8,7 @@ import { enqueueWebhook } from "../services/webhook-queue.server";
  * GID and let the processor attribute it to a product (see webhook-queue).
  */
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { shop, payload } = await authenticate.webhook(request);
+  const { shop, payload, webhookId } = await authenticate.webhook(request);
   console.log(`[Webhook] inventory_items/update for ${shop}`);
 
   // Enqueue under the literal marker the processor switches on. Do NOT use the
@@ -22,6 +22,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     String(payload.admin_graphql_api_id),
     "UPDATED",
     payload,
+    webhookId,
   );
 
   return new Response(null, { status: 200 });

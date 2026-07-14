@@ -17,18 +17,26 @@ import { TitleBar } from "@shopify/app-bridge-react";
 import { authenticate, STANDARD_PLAN, PREMIUM_PLAN } from "../shopify.server";
 import prisma from "../db.server";
 import { storage } from "../services/storage.server";
+import { computeNextRunAt } from "../services/scheduler.server";
 
 const IS_TEST_BILLING = process.env.NODE_ENV !== "production";
 
 // Map an active Shopify subscription plan name to our stored plan settings.
+// Deliberately does NOT touch webhooksEnabled: afterAuth turns it on for every
+// install, and it is the master switch for the change ledger that also feeds
+// the dashboard "Restore changes" flow. Setting it false here on a plan
+// transition (e.g. FREE -> STANDARD, or a Premium lapse) would silently stop
+// change tracking until the next reinstall. Plan gating for the Premium
+// history UI happens in its route loader instead.
 function planSettings(plan: "FREE" | "STANDARD" | "PREMIUM") {
   switch (plan) {
     case "PREMIUM":
-      return { plan, retentionDays: 90, webhooksEnabled: true };
+      return { plan, retentionDays: 90 };
     case "STANDARD":
-      return { plan, retentionDays: 30, webhooksEnabled: false };
+      return { plan, retentionDays: 30 };
     default:
-      return { plan, retentionDays: 7, webhooksEnabled: false, autoBackupEnabled: false };
+      // Automatic backups are a paid entitlement; drop them on downgrade.
+      return { plan, retentionDays: 7, autoBackupEnabled: false };
   }
 }
 
@@ -117,11 +125,61 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   if (actionType === "updateSettings") {
     const autoBackupEnabled = formData.get("autoBackupEnabled") === "true";
-    const autoBackupHour = parseInt(formData.get("autoBackupHour") as string) || 3;
+    const parsedHour = parseInt(formData.get("autoBackupHour") as string, 10);
+    // NaN falls back to 3; clamp so a crafted value can't skew nextRunAt.
+    const autoBackupHour = Number.isNaN(parsedHour)
+      ? 3
+      : Math.min(23, Math.max(0, parsedHour));
+
+    // Automatic backups are a paid entitlement — enforce it server-side even
+    // though the card is hidden on the Free plan.
+    const store = await prisma.store.findUnique({ where: { id: shop } });
+    if (autoBackupEnabled && (store?.plan ?? "FREE") === "FREE") {
+      return json({
+        success: false,
+        error: "Automatic backups are available on the Standard and Premium plans.",
+      });
+    }
 
     await prisma.store.update({
       where: { id: shop },
       data: { autoBackupEnabled, autoBackupHour },
+    });
+
+    // Keep the BackupSchedule row in step with the Store flags — the
+    // scheduler only fires stores whose schedule is enabled with a due
+    // nextRunAt (mirrors the dashboard's saveSchedule path). Preserve a
+    // dashboard-chosen interval; null nextRunAt while disabled.
+    const existing = await prisma.backupSchedule.findUnique({
+      where: { storeId: shop },
+    });
+    const interval = existing?.interval ?? "DAILY";
+    // Anchor on the stored weeklyDay (timestamps only as a fallback for rows
+    // that predate it — the scheduler's failure path reuses nextRunAt as a
+    // retry timer) so a WEEKLY schedule keeps its weekday — the merchant is
+    // only editing the hour here, not the run day.
+    const nextRunAt = autoBackupEnabled
+      ? computeNextRunAt(
+          interval,
+          autoBackupHour,
+          new Date(),
+          existing?.weeklyDay ?? existing?.nextRunAt ?? existing?.lastRunAt,
+        )
+      : null;
+    // Lock in the WEEKLY run day; undefined leaves the stored value alone
+    // (Prisma skips undefined fields).
+    const weeklyDay =
+      interval === "WEEKLY" && nextRunAt ? nextRunAt.getUTCDay() : undefined;
+    await prisma.backupSchedule.upsert({
+      where: { storeId: shop },
+      create: {
+        storeId: shop,
+        enabled: autoBackupEnabled,
+        interval,
+        nextRunAt,
+        weeklyDay,
+      },
+      update: { enabled: autoBackupEnabled, nextRunAt, weeklyDay },
     });
 
     return json({ success: true });

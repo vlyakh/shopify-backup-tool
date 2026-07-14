@@ -47,9 +47,12 @@ function RestoreProductBlock() {
 
   const [hist, setHist] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [pending, setPending] = useState({});
   const [errors, setErrors] = useState({});
   const [allPending, setAllPending] = useState(false);
+  const [allError, setAllError] = useState(null);
+  const [allWarnings, setAllWarnings] = useState(null);
   const [confirmAll, setConfirmAll] = useState(false);
 
   async function load() {
@@ -57,9 +60,12 @@ function RestoreProductBlock() {
       const r = await fetch(
         `/api/product-history?resourceId=${encodeURIComponent(productId)}`,
       );
-      if (r.ok) setHist(await r.json());
+      if (!r.ok) throw new Error(`History request failed (${r.status})`);
+      setHist(await r.json());
+      setLoadError(false);
     } catch (err) {
       console.error("Failed to load history:", err);
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -73,7 +79,12 @@ function RestoreProductBlock() {
     load();
   }, [productId]);
 
+  // A row Undo and "Revert all" must never run at the same time: the slower
+  // write would land after the other's, diverging the product from the ledger.
+  const anyRowPending = Object.values(pending).some(Boolean);
+
   async function undo(row) {
+    if (allPending) return;
     const key = `${row.changeId}:${row.field}`;
     setPending((p) => ({ ...p, [key]: true }));
     setErrors((p) => ({ ...p, [key]: null }));
@@ -96,30 +107,94 @@ function RestoreProductBlock() {
   }
 
   async function revertAll() {
-    if (!hist?.backupItemId) return;
+    if (!hist?.backupItemId || allPending || anyRowPending) return;
     setAllPending(true);
+    setAllError(null);
+    setAllWarnings(null);
     try {
       const r = await fetch("/api/revert-product", {
         method: "POST",
         body: JSON.stringify({ backupItemId: hist.backupItemId }),
       });
       const result = await r.json();
-      if (r.ok && result.success) await load();
+      if (r.ok && result.success) {
+        // Partial failure: variant/media steps can fail even though the
+        // product-level revert succeeded (and the history is cleared).
+        const warnings = [
+          ...(result.variantWarnings || []),
+          ...(result.mediaWarnings || []),
+        ];
+        if (warnings.length > 0) setAllWarnings(warnings);
+        await load();
+      } else {
+        setAllError(result.error || "Revert failed");
+      }
     } catch (err) {
       console.error(err);
+      setAllError("Network error — the revert may not have completed");
     } finally {
       setAllPending(false);
     }
   }
 
   if (loading) return null;
-  if (!hist?.hasBackup || !hist.rows || hist.rows.length === 0) return null;
 
-  const groups = groupByEvent(hist.rows);
+  // A failed history request must not silently hide real pending changes.
+  if (loadError) {
+    return (
+      <AdminBlock title="Undo recent changes">
+        <BlockStack gap="base">
+          <Text>
+            Couldn't load the change history — this does not mean there are no
+            changes since your last backup. Check your connection and try
+            again.
+          </Text>
+          <Button onPress={load}>Retry</Button>
+        </BlockStack>
+      </AdminBlock>
+    );
+  }
+
+  const rows = hist?.hasBackup ? hist.rows || [] : [];
+  // Keep the block visible after a revert-all failure or partial failure even
+  // though the row list is empty — otherwise the outcome would be invisible.
+  if (rows.length === 0 && !allError && !allWarnings) return null;
+
+  const revertAllStatus =
+    allError || allWarnings ? (
+      <BlockStack gap="small">
+        {allError ? (
+          <BlockStack gap="none">
+            <Badge tone="critical">Revert failed</Badge>
+            <Text>{allError}</Text>
+          </BlockStack>
+        ) : null}
+        {allWarnings ? (
+          <BlockStack gap="none">
+            <Badge tone="warning">Reverted with warnings</Badge>
+            <Text>Some parts of this product could not be reverted:</Text>
+            {allWarnings.map((w, i) => (
+              <Text key={i}>{w}</Text>
+            ))}
+          </BlockStack>
+        ) : null}
+      </BlockStack>
+    ) : null;
+
+  if (rows.length === 0) {
+    return (
+      <AdminBlock title="Undo recent changes">
+        <BlockStack gap="base">{revertAllStatus}</BlockStack>
+      </AdminBlock>
+    );
+  }
+
+  const groups = groupByEvent(rows);
 
   return (
     <AdminBlock title="Undo recent changes">
       <BlockStack gap="base">
+        {revertAllStatus}
         <Text>
           Every change since your last backup. Undo any one on its own.
         </Text>
@@ -147,7 +222,7 @@ function RestoreProductBlock() {
                       {row.revertable ? (
                         <Button
                           onPress={() => undo(row)}
-                          disabled={pending[key]}
+                          disabled={pending[key] || allPending}
                         >
                           {pending[key] ? "Undoing…" : "Undo"}
                         </Button>
@@ -172,7 +247,7 @@ function RestoreProductBlock() {
               setConfirmAll(true);
             }
           }}
-          disabled={allPending}
+          disabled={allPending || anyRowPending}
         >
           {allPending
             ? "Reverting all…"

@@ -3,10 +3,41 @@ import { storage } from "./storage.server";
 import type { ResourceType, ChangeAction } from "@prisma/client";
 
 /**
+ * The most recent ChangeLog row holding a FULL snapshot of this resource.
+ * Skips our synthetic cost/inventory/metafield events (minimal blobs, named
+ * `…-inv-after.json` / `…-mf-after.json`, historically `…-cost-after.json`) —
+ * diffing a full product against one of those would flag every field as
+ * changed. Filtered in the DB so any run of consecutive synthetic rows can't
+ * push the real baseline out of a scan window.
+ */
+export function findLastFullSnapshot(
+  storeId: string,
+  resourceType: ResourceType,
+  resourceId: string,
+) {
+  return prisma.changeLog.findFirst({
+    where: {
+      storeId,
+      resourceType,
+      resourceId,
+      afterPath: { not: null },
+      AND: [
+        { NOT: { afterPath: { endsWith: "-cost-after.json" } } },
+        { NOT: { afterPath: { endsWith: "-inv-after.json" } } },
+        { NOT: { afterPath: { endsWith: "-mf-after.json" } } },
+      ],
+    },
+    orderBy: { changedAt: "desc" },
+  });
+}
+
+/**
  * Record a change from a webhook event.
  * Stores before/after snapshots and identifies changed fields.
  * `hidden` marks revert-generated events: recorded (so the diff baseline
  * advances) but not shown in the merchant-facing history.
+ * `webhookEventId` is the idempotency key: a retried event that already
+ * recorded a row (e.g. its COMPLETED update failed afterwards) is a no-op.
  */
 export async function recordChange(
   storeId: string,
@@ -15,10 +46,19 @@ export async function recordChange(
   action: ChangeAction,
   data: unknown,
   hidden = false,
+  webhookEventId?: string,
 ): Promise<string | null> {
   // Check if store has premium plan with webhooks enabled
   const store = await prisma.store.findUnique({ where: { id: storeId } });
   if (!store?.webhooksEnabled) return null;
+
+  if (webhookEventId) {
+    const existing = await prisma.changeLog.findFirst({
+      where: { webhookEventId },
+      select: { id: true },
+    });
+    if (existing) return existing.id;
+  }
 
   const timestamp = Date.now();
   const afterPath = `${storeId}/changes/${resourceType}/${encodeURIComponent(resourceId)}/${timestamp}-after.json`;
@@ -31,16 +71,10 @@ export async function recordChange(
   const changedFields: string[] = [];
 
   if (action === "UPDATED") {
-    // Look for the most recent FULL snapshot of this resource. Skip our synthetic
-    // cost/inventory/metafield events (minimal blobs) — diffing a full product
-    // against one of those would flag every field as changed.
-    const recent = await prisma.changeLog.findMany({
-      where: { storeId, resourceType, resourceId },
-      orderBy: { changedAt: "desc" },
-      take: 10,
-    });
-    const lastChange = recent.find(
-      (c) => c.afterPath && !/-(?:cost|inv|mf)-after\.json$/.test(c.afterPath),
+    const lastChange = await findLastFullSnapshot(
+      storeId,
+      resourceType,
+      resourceId,
     );
 
     if (lastChange?.afterPath) {
@@ -65,10 +99,36 @@ export async function recordChange(
           backup: { storeId, status: "COMPLETED" },
         },
         orderBy: { backup: { createdAt: "desc" } },
+        include: { backup: { select: { createdAt: true } } },
       });
       const raw = backupItem ? await storage.get(backupItem.storagePath) : null;
       if (raw) {
         const restBaseline = graphqlBackupToRest(JSON.parse(raw));
+        // Backups that predate publishedAt capture leave published_at out of
+        // the baseline, which would make a PUBLISH as the first post-backup
+        // edit undetectable. published_at is the time of the LAST publish, so
+        // a value newer than the backup means the product cannot have been
+        // published when the backup ran (an intermediate un/republish would
+        // have fired webhooks recorded before this first-event branch) — seed
+        // the baseline as unpublished so the diff, the history row (which
+        // needs the key in `before`) and undo all work. Future-dated values
+        // are scheduled publishing possibly set up before the backup — skip
+        // them (a genuine publish is always in the past by processing time).
+        // An UNPUBLISH as the first edit stays undetectable for such backups
+        // (the payload carries only null; the backup has no state to compare).
+        if (!("published_at" in restBaseline)) {
+          const backedUpAt = backupItem?.backup.createdAt.getTime();
+          const p = (data as Record<string, unknown>).published_at;
+          const pMs = typeof p === "string" ? Date.parse(p) : NaN;
+          if (
+            backedUpAt != null &&
+            Number.isFinite(pMs) &&
+            pMs > backedUpAt &&
+            pMs <= Date.now()
+          ) {
+            restBaseline.published_at = null;
+          }
+        }
         const baselinePath = `${storeId}/changes/PRODUCT/${encodeURIComponent(resourceId)}/${timestamp}-baseline.json`;
         await storage.put(baselinePath, JSON.stringify(restBaseline, null, 2));
         beforePath = baselinePath;
@@ -92,6 +152,7 @@ export async function recordChange(
       afterPath,
       changedFields,
       hidden,
+      webhookEventId: webhookEventId ?? null,
     },
   });
   return created.id;
@@ -151,6 +212,12 @@ export function graphqlBackupToRest(
     status: String(g.status ?? "").toLowerCase(),
     tags: Array.isArray(g.tags) ? g.tags.join(", ") : (g.tags ?? ""),
     template_suffix: g.templateSuffix ?? null,
+    // Only present when the backup carried it (older backups didn't fetch
+    // publishedAt) — the first-edit diff skips the field when absent, and the
+    // history's published_at row requires the key in `before`.
+    ...(g.publishedAt !== undefined
+      ? { published_at: g.publishedAt ?? null }
+      : {}),
     // Match the products/update webhook category shape (gid under
     // admin_graphql_api_id) so first-edit diffs + reverts line up.
     category: g.category
@@ -186,10 +253,21 @@ export function firstEventChangedFields(
     "product_type",
     "handle",
     "status",
+    "template_suffix",
   ]) {
     if (norm(baseline[f]) !== norm(after[f])) changed.push(f);
   }
   if (tagsKey(baseline.tags) !== tagsKey(after.tags)) changed.push("tags");
+
+  // Publish state (Online Store): timestamp set vs null — compare published-ness
+  // like the history does. Skip when the baseline doesn't carry the field
+  // (backups made before publishedAt was captured) to avoid phantom rows.
+  if (
+    "published_at" in baseline &&
+    !!baseline.published_at !== !!after.published_at
+  ) {
+    changed.push("published_at");
+  }
 
   // Category (in the 2024-10+ webhook): compare by taxonomy gid, na = cleared.
   const catId = (c: unknown) => {

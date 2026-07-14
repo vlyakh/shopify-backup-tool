@@ -44,7 +44,8 @@ class AzureBlobStorage implements StorageProvider {
       return Buffer.concat(chunks).toString("utf-8");
     } catch (error: unknown) {
       const statusCode = (error as { statusCode?: number })?.statusCode;
-      if (statusCode === 404) return null;
+      const code = (error as { code?: string })?.code;
+      if (statusCode === 404 || code === "BlobNotFound") return null;
       throw error;
     }
   }
@@ -85,8 +86,11 @@ class LocalStorage implements StorageProvider {
     try {
       const filePath = path.join(this.basePath, key);
       return await fs.readFile(filePath, "utf-8");
-    } catch {
-      return null;
+    } catch (error: unknown) {
+      // Only "missing" is null; other errors must surface, not look like
+      // an absent blob (callers treat null as "no baseline").
+      if ((error as { code?: string })?.code === "ENOENT") return null;
+      throw error;
     }
   }
 
@@ -146,8 +150,16 @@ class S3Storage implements StorageProvider {
         new GetObjectCommand({ Bucket: this.bucket, Key: key }),
       );
       return (await response.Body?.transformToString()) || null;
-    } catch {
-      return null;
+    } catch (error: unknown) {
+      // Only "missing" is null; an outage/auth error must surface, not look
+      // like an absent blob (callers treat null as "no baseline").
+      const name = (error as { name?: string })?.name;
+      const status = (error as { $metadata?: { httpStatusCode?: number } })
+        ?.$metadata?.httpStatusCode;
+      if (name === "NoSuchKey" || name === "NotFound" || status === 404) {
+        return null;
+      }
+      throw error;
     }
   }
 

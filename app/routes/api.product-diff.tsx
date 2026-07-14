@@ -3,6 +3,7 @@ import { json } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { storage } from "../services/storage.server";
+import { completeProductNestedConnections } from "../services/backup.server";
 import { imageSignature } from "../services/image-signature.server";
 
 /**
@@ -31,6 +32,11 @@ import { imageSignature } from "../services/image-signature.server";
 
 // Field shape MUST mirror PRODUCTS_QUERY in backup.server.ts so before/after diff is apples-to-apples.
 // (This is the products(first:50){nodes{...}} selection collapsed onto product(id:$id){...}.)
+// The nested connections select pageInfo, and the loader runs
+// completeProductNestedConnections on the result: backup blobs merge ALL
+// variant/image/metafield pages (and strip pageInfo), so the live side must do
+// the same or big products (>100 variants / >50 images / >50 metafields) would
+// read as changed forever.
 const PRODUCT_DIFF_QUERY = `#graphql
   query GetProductForDiff($id: ID!) {
     product(id: $id) {
@@ -43,6 +49,7 @@ const PRODUCT_DIFF_QUERY = `#graphql
       tags
       status
       templateSuffix
+      publishedAt
       category {
         id
         name
@@ -54,6 +61,10 @@ const PRODUCT_DIFF_QUERY = `#graphql
         values
       }
       variants(first: 100) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
         nodes {
           id
           title
@@ -72,6 +83,11 @@ const PRODUCT_DIFF_QUERY = `#graphql
             id
             tracked
             requiresShipping
+            unitCost {
+              amount
+            }
+            harmonizedSystemCode
+            countryCodeOfOrigin
             measurement {
               weight {
                 value
@@ -82,6 +98,10 @@ const PRODUCT_DIFF_QUERY = `#graphql
         }
       }
       images(first: 50) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
         nodes {
           id
           url
@@ -91,6 +111,10 @@ const PRODUCT_DIFF_QUERY = `#graphql
         }
       }
       metafields(first: 50) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
         nodes {
           id
           namespace
@@ -187,6 +211,36 @@ function prettyLabel(field: string): string {
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(" ");
   return out || field;
+}
+
+/**
+ * JSON-compare `after` against `before`, ignoring object keys `before` doesn't
+ * have. Backups made before newer fields were captured (inventoryItem.unitCost,
+ * harmonizedSystemCode, countryCodeOfOrigin…) can't diff on those fields, and a
+ * raw stringify against the richer live node would flag every variant-bearing
+ * product as changed forever. Current blobs carry the exact same key set as
+ * PRODUCT_DIFF_QUERY (the queries mirror), so for them this is a full compare.
+ */
+function equalsOnBackupKeys(before: unknown, after: unknown): boolean {
+  if (Array.isArray(before) && Array.isArray(after)) {
+    return (
+      before.length === after.length &&
+      before.every((b, i) => equalsOnBackupKeys(b, after[i]))
+    );
+  }
+  if (
+    before &&
+    after &&
+    typeof before === "object" &&
+    typeof after === "object" &&
+    !Array.isArray(before) &&
+    !Array.isArray(after)
+  ) {
+    const b = before as Record<string, unknown>;
+    const a = after as Record<string, unknown>;
+    return Object.keys(b).every((k) => equalsOnBackupKeys(b[k], a[k]));
+  }
+  return JSON.stringify(before) === JSON.stringify(after);
 }
 
 // Count items in a connection ({ nodes: [...] }) or a plain array; null otherwise.
@@ -539,6 +593,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         resourceType: "PRODUCT",
         resourceId,
         changedAt: { gt: latestBackupItem.backup.createdAt },
+        // Our own revert echoes / events cleared by "Revert all to backup" are
+        // not merchant changes — same filter as api.product-history.
+        hidden: false,
       },
       orderBy: { changedAt: "desc" },
       take: 50,
@@ -595,6 +652,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       );
     }
 
+    // Follow any nested pages the first fetch truncated (variants > 100,
+    // images/metafields > 50) and strip pageInfo, so the live product carries
+    // the same COMPLETE { nodes: [...] } shape as the stored backup blob.
+    await completeProductNestedConnections(admin, liveProduct);
+
     // Compute changed top-level fields (shallow stringify compare per DIFF_FIELDS key).
     // Caveat: `tags` may come back in a different array order between backup and live,
     // so this compare can flag it as changed even when the set is equal. Acceptable for
@@ -612,10 +674,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       // `images` is compared by a stable signature (filename + altText), NOT raw
       // JSON: restoring images re-ingests them under new urls/ids, so a raw
       // compare would report a just-reverted product as changed forever.
+      // `variants` is compared only on the keys the backup captured, so blobs
+      // that predate newly-added inventoryItem fields don't diff on them.
       const differs =
         field === "images"
           ? imageSignature(before) !== imageSignature(after)
-          : JSON.stringify(before) !== JSON.stringify(after);
+          : field === "variants"
+            ? !equalsOnBackupKeys(before, after)
+            : JSON.stringify(before) !== JSON.stringify(after);
       if (differs) {
         changedFields.push({
           field,

@@ -3,10 +3,22 @@ import { authenticate } from "../shopify.server";
 import { enqueueWebhook } from "../services/webhook-queue.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { shop, topic, payload } = await authenticate.webhook(request);
+  const { shop, topic, payload, webhookId } = await authenticate.webhook(request);
   console.log(`[Webhook] ${topic} for ${shop}`);
 
-  await enqueueWebhook(shop, topic, "PRODUCT", String(payload.admin_graphql_api_id), "DELETED", payload);
+  // Delete payloads only carry the numeric id — build the GID so the ledger
+  // keys line up with the create/update events for the same product.
+  const resourceId = payload.admin_graphql_api_id
+    ? String(payload.admin_graphql_api_id)
+    : payload.id != null
+      ? `gid://shopify/Product/${payload.id}`
+      : null;
+  if (!resourceId) {
+    console.error(`[Webhook] ${topic} for ${shop}: payload has no id, skipping`);
+    return new Response(null, { status: 200 });
+  }
+
+  await enqueueWebhook(shop, topic, "PRODUCT", resourceId, "DELETED", payload, webhookId);
 
   return new Response(null, { status: 200 });
 };
