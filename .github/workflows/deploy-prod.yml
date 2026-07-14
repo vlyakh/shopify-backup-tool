@@ -1,0 +1,70 @@
+name: Deploy to Azure App Service (PROD)
+
+# PROD is promoted manually: run this workflow from the Actions tab.
+# Push-to-main only deploys the dev app (deploy.yml).
+on:
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: "22"
+  AZURE_WEBAPP_NAME: ${{ secrets.AZURE_WEBAPP_NAME_PROD }}
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: Install dependencies
+        # npm install (not ci): the Windows-generated lockfile omits Linux-only
+        # nested optional deps (@emnapi/* under @napi-rs/wasm-runtime), which
+        # makes the stricter `npm ci` fail on the Linux runner.
+        run: npm install
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Build Remix app
+        run: npm run build
+        env:
+          NODE_ENV: production
+
+      - name: Remove dev dependencies
+        run: npm prune --omit=dev
+
+      - name: Remove Shopify CLI (not needed in production)
+        run: npm remove @shopify/cli 2>/dev/null || true
+
+      - name: Re-generate Prisma client after prune
+        # npm prune --omit=dev can delete the generated client at
+        # node_modules/.prisma, which the app needs at runtime.
+        run: npx prisma generate
+
+      # Package the deployment artifact
+      - name: Create deployment package
+        run: |
+          zip -r deploy.zip \
+            build/ \
+            node_modules/ \
+            prisma/ \
+            package.json \
+            startup.sh \
+            -x "node_modules/.cache/*"
+
+      - name: Deploy to Azure App Service
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE_PROD }}
+          package: deploy.zip
+          # No startup-command: publish-profile auth can't set it. The app is
+          # self-starting via `npm start` (runs prisma migrate deploy + remix-serve),
+          # which is Azure's default Node startup command.
