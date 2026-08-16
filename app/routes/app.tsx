@@ -12,11 +12,18 @@ export const links = () => [{ rel: "stylesheet", href: polarisStyles }];
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
 
-  return { apiKey: process.env.SHOPIFY_API_KEY || "" };
+  return {
+    apiKey: process.env.SHOPIFY_API_KEY || "",
+    // /app/reset is developer tooling (it reads back what the webhook recorded
+    // and offers "start from a clean slate" wipes), not a merchant feature.
+    // Decided from the loader rather than in the component so the gate is the
+    // server's, matching the route's own guard.
+    showDevTools: process.env.NODE_ENV !== "production",
+  };
 };
 
 export default function App() {
-  const { apiKey } = useLoaderData<typeof loader>();
+  const { apiKey, showDevTools } = useLoaderData<typeof loader>();
 
   return (
     <AppProvider isEmbeddedApp apiKey={apiKey}>
@@ -26,7 +33,7 @@ export default function App() {
         </Link>
         <Link to="/app/changes">Change History</Link>
         <Link to="/app/settings">Settings</Link>
-        <Link to="/app/reset">Reset data</Link>
+        {showDevTools ? <Link to="/app/reset">Reset data</Link> : null}
       </NavMenu>
       <Outlet />
     </AppProvider>

@@ -17,7 +17,23 @@ import prisma from "../db.server";
 import { storage } from "../services/storage.server";
 import { deleteBackupBlobs } from "../services/backup.server";
 
+/**
+ * This page is developer tooling — it reads back what the webhook actually
+ * recorded and offers "start from a clean slate" wipes. Its actions
+ * permanently delete every backup and the whole change ledger, with no
+ * recovery path, so it must not be reachable by merchants on a paid backup
+ * app. Hiding the nav link is not a gate: the URL is guessable and
+ * authenticate.admin only proves "this request belongs to some shop", not
+ * "this is the developer". Refuse the route outright in production.
+ */
+function assertDevOnly(): void {
+  if (process.env.NODE_ENV === "production") {
+    throw new Response("Not Found", { status: 404 });
+  }
+}
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
+  assertDevOnly();
   const { session } = await authenticate.admin(request);
   const [changeLogCount, backupItemCount, latestBackup, recent] =
     await Promise.all([
@@ -86,6 +102,7 @@ function fmt(iso: string, hydrated: boolean): string {
 }
 
 export const action = async ({ request }: ActionFunctionArgs) => {
+  assertDevOnly();
   const { session } = await authenticate.admin(request);
   const intent = (await request.formData()).get("intent");
 

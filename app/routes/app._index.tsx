@@ -66,6 +66,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return json({
     shop,
     store,
+    // "Reset data" is developer tooling — see the guard in app.reset.tsx.
+    showDevTools: process.env.NODE_ENV !== "production",
     schedule: schedule
       ? {
           enabled: schedule.enabled,
@@ -633,7 +635,7 @@ function ScheduleCard({
 }
 
 export default function Index() {
-  const { store, backups, totalBackups, lastBackup, schedule } =
+  const { store, backups, totalBackups, lastBackup, schedule, showDevTools } =
     useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const submit = useSubmit();
@@ -713,7 +715,9 @@ export default function Index() {
   return (
     <Page>
       <TitleBar title="Store Backup">
-        <button onClick={() => navigate("/app/reset")}>Reset data</button>
+        {showDevTools ? (
+          <button onClick={() => navigate("/app/reset")}>Reset data</button>
+        ) : null}
       </TitleBar>
       <BlockStack gap="500">
         {/* Live backup progress */}
