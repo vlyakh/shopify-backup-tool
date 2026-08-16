@@ -189,14 +189,52 @@ class S3Storage implements StorageProvider {
   }
 }
 
+/**
+ * Picks the storage backend from STORAGE_PROVIDER.
+ *
+ * This used to fall back to LocalStorage for any unrecognised value, which is
+ * the worst possible failure mode for a backup product: a blank or mistyped
+ * App Service setting sent every backup to the instance's local disk while
+ * still reporting COMPLETED, so the merchant's backups looked fine and were
+ * not in durable storage. Nothing surfaced the mistake.
+ *
+ * So: the value is normalised (a stray case or space is a typo, not a
+ * different provider), local storage must be asked for by name, and choosing
+ * it in production is refused outright — crashing on boot is loud, visible in
+ * the Azure log stream, and vastly cheaper than discovering it at restore
+ * time. The chosen provider is logged either way.
+ */
 function createStorage(): StorageProvider {
-  switch (process.env.STORAGE_PROVIDER) {
+  const configured = (process.env.STORAGE_PROVIDER ?? "").trim().toLowerCase();
+  const isProduction = process.env.NODE_ENV === "production";
+
+  switch (configured) {
     case "azure":
+      console.log("[Storage] Using Azure Blob storage");
       return new AzureBlobStorage();
     case "s3":
+      console.log("[Storage] Using S3 storage");
       return new S3Storage();
-    default:
+    case "local":
+      if (isProduction) {
+        throw new Error(
+          'STORAGE_PROVIDER="local" is not allowed when NODE_ENV=production: ' +
+            "backups would be written to the instance's local disk instead of " +
+            'durable storage. Set STORAGE_PROVIDER to "azure" or "s3".',
+        );
+      }
+      console.log("[Storage] Using local filesystem storage");
       return new LocalStorage();
+    case "":
+      throw new Error(
+        "STORAGE_PROVIDER is not set. Set it to 'azure', 's3', or 'local' " +
+          "(local is for development only).",
+      );
+    default:
+      throw new Error(
+        `STORAGE_PROVIDER="${process.env.STORAGE_PROVIDER}" is not a known ` +
+          "provider. Expected 'azure', 's3', or 'local'.",
+      );
   }
 }
 
