@@ -1,16 +1,6 @@
-import { useEffect, useState } from "react";
-import {
-  reactExtension,
-  useApi,
-  AdminAction,
-  BlockStack,
-  InlineStack,
-  Text,
-  Button,
-  Badge,
-  Divider,
-  ProgressIndicator,
-} from "@shopify/ui-extensions-react/admin";
+/** @jsxImportSource preact */
+import { render } from "preact";
+import { useEffect, useState } from "preact/hooks";
 
 function formatDate(dateString) {
   return new Date(dateString).toLocaleDateString("en-US", {
@@ -22,7 +12,6 @@ function formatDate(dateString) {
 }
 
 function RecoverDeletedAction() {
-  const { close } = useApi();
   const [deletedProducts, setDeletedProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -89,102 +78,96 @@ function RecoverDeletedAction() {
 
   if (loading) {
     return (
-      <AdminAction title="Recover Deleted Products">
-        <BlockStack gap="base">
-          <ProgressIndicator size="small-200" />
-          <Text>Loading deleted products...</Text>
-        </BlockStack>
-      </AdminAction>
+      <s-admin-action heading="Recover Deleted Products">
+        <s-stack direction="block" gap="base">
+          <s-spinner />
+          <s-text>Loading deleted products...</s-text>
+        </s-stack>
+      </s-admin-action>
     );
   }
 
   // A failed request must never render the "nothing to recover" empty state.
   if (loadError) {
     return (
-      <AdminAction
-        title="Recover Deleted Products"
-        secondaryAction={<Button onPress={close}>Close</Button>}
-      >
-        <BlockStack gap="base">
-          <Text>
+      <s-admin-action heading="Recover Deleted Products">
+        <s-stack direction="block" gap="base">
+          <s-text>
             Couldn't load deleted products — this does not mean there is
             nothing to recover. Check your connection and try again.
-          </Text>
-          <Button onPress={fetchDeleted}>Retry</Button>
-        </BlockStack>
-      </AdminAction>
+          </s-text>
+          <s-button onClick={fetchDeleted}>Retry</s-button>
+        </s-stack>
+        <s-button slot="secondary-actions" onClick={() => shopify.close()}>Close</s-button>
+      </s-admin-action>
     );
   }
 
   if (deletedProducts.length === 0) {
     return (
-      <AdminAction
-        title="Recover Deleted Products"
-        secondaryAction={<Button onPress={close}>Close</Button>}
-      >
-        <BlockStack gap="base">
-          <Text>No recently deleted products found in your backups.</Text>
-          <Text>
+      <s-admin-action heading="Recover Deleted Products">
+        <s-stack direction="block" gap="base">
+          <s-text>No recently deleted products found in your backups.</s-text>
+          <s-text>
             Products that were backed up before deletion can be recovered here.
             Make sure you have recent backups enabled.
-          </Text>
-        </BlockStack>
-      </AdminAction>
+          </s-text>
+        </s-stack>
+        <s-button slot="secondary-actions" onClick={() => shopify.close()}>Close</s-button>
+      </s-admin-action>
     );
   }
 
   return (
-    <AdminAction
-      title="Recover Deleted Products"
-      secondaryAction={<Button onPress={close}>Close</Button>}
-    >
-      <BlockStack gap="base">
-        <Text>
+    <s-admin-action heading="Recover Deleted Products">
+      <s-stack direction="block" gap="base">
+        <s-text>
           {deletedProducts.length} deleted product{deletedProducts.length !== 1 ? "s" : ""} found
           in your backups. Recovered products will be created in Draft status.
-        </Text>
-        <Divider />
+        </s-text>
+        <s-divider />
 
         {deletedProducts.map((product) => (
-          <BlockStack key={product.backupItemId} gap="small">
-            <InlineStack gap="small" blockAlignment="center" inlineAlignment="space-between">
-              <BlockStack gap="none">
-                <Text fontWeight="bold">{product.title}</Text>
-                <Text>
+          <s-stack key={product.backupItemId} direction="block" gap="small">
+            <s-stack direction="inline" gap="small" alignItems="center" justifyContent="space-between">
+              <s-stack direction="block" gap="none">
+                <s-text type="strong">{product.title}</s-text>
+                <s-text>
                   Deleted {formatDate(product.deletedAt)} &middot; {product.variantCount} variant{product.variantCount !== 1 ? "s" : ""}
-                </Text>
-              </BlockStack>
+                </s-text>
+              </s-stack>
 
               {recovered[product.backupItemId] ? (
-                <Badge tone="success">Recovered</Badge>
+                <s-badge tone="success">Recovered</s-badge>
               ) : errors[product.backupItemId] ? (
-                <BlockStack gap="none">
-                  <Badge tone="critical">Failed</Badge>
-                  <Text>{errors[product.backupItemId]}</Text>
-                  <Button
-                    onPress={() => handleRecover(product.backupItemId, product.title)}
+                <s-stack direction="block" gap="none">
+                  <s-badge tone="critical">Failed</s-badge>
+                  <s-text>{errors[product.backupItemId]}</s-text>
+                  <s-button
+                    onClick={() => handleRecover(product.backupItemId, product.title)}
                     disabled={recovering[product.backupItemId]}
                   >
                     {recovering[product.backupItemId] ? "Recovering..." : "Retry"}
-                  </Button>
-                </BlockStack>
+                  </s-button>
+                </s-stack>
               ) : (
-                <Button
-                  onPress={() => handleRecover(product.backupItemId, product.title)}
+                <s-button
+                  onClick={() => handleRecover(product.backupItemId, product.title)}
                   disabled={recovering[product.backupItemId]}
                 >
                   {recovering[product.backupItemId] ? "Recovering..." : "Recover"}
-                </Button>
+                </s-button>
               )}
-            </InlineStack>
-            <Divider />
-          </BlockStack>
+            </s-stack>
+            <s-divider />
+          </s-stack>
         ))}
-      </BlockStack>
-    </AdminAction>
+      </s-stack>
+      <s-button slot="secondary-actions" onClick={() => shopify.close()}>Close</s-button>
+    </s-admin-action>
   );
 }
 
-export default reactExtension("admin.product-index.action.render", () => (
-  <RecoverDeletedAction />
-));
+export default () => {
+  render(<RecoverDeletedAction />, document.body);
+};

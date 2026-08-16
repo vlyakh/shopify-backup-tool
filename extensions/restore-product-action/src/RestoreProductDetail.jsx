@@ -1,16 +1,6 @@
-import { useEffect, useState } from "react";
-import {
-  reactExtension,
-  useApi,
-  AdminAction,
-  BlockStack,
-  InlineStack,
-  Section,
-  Text,
-  Button,
-  Badge,
-  ProgressIndicator,
-} from "@shopify/ui-extensions-react/admin";
+/** @jsxImportSource preact */
+import { render } from "preact";
+import { useEffect, useState } from "preact/hooks";
 
 function formatDate(s) {
   return new Date(s).toLocaleDateString("en-US", {
@@ -39,8 +29,7 @@ function groupByEvent(rows) {
  * edit, with per-edit Undo.
  */
 function RestoreProductDetail() {
-  const { close, data } = useApi();
-  const productId = data?.selected?.[0]?.id;
+  const productId = shopify.data?.selected?.[0]?.id;
 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -133,73 +122,73 @@ function RestoreProductDetail() {
 
   if (loading) {
     return (
-      <AdminAction title="Undo">
-        <BlockStack gap="base">
-          <ProgressIndicator size="small-200" />
-          <Text>Checking history…</Text>
-        </BlockStack>
-      </AdminAction>
+      <s-admin-action heading="Undo">
+        <s-stack direction="block" gap="base">
+          <s-spinner />
+          <s-text>Checking history…</s-text>
+        </s-stack>
+      </s-admin-action>
     );
   }
 
   // A failed history request must not render the "no backup" state below.
   if (loadError) {
     return (
-      <AdminAction
-        title="Undo"
-        secondaryAction={<Button onPress={close}>Close</Button>}
-      >
-        <BlockStack gap="base">
-          <Text>
+      <s-admin-action heading="Undo">
+        <s-stack direction="block" gap="base">
+          <s-text>
             Couldn't load the change history — this does not mean there is no
             backup. Check your connection and try again.
-          </Text>
-          <Button
-            onPress={() => {
+          </s-text>
+          <s-button
+            onClick={() => {
               setLoading(true);
               load();
             }}
           >
             Retry
-          </Button>
-        </BlockStack>
-      </AdminAction>
+          </s-button>
+        </s-stack>
+        <s-button slot="secondary-actions" onClick={() => shopify.close()}>
+          Close
+        </s-button>
+      </s-admin-action>
     );
   }
 
   if (!hist?.hasBackup) {
     return (
-      <AdminAction
-        title="Undo"
-        secondaryAction={<Button onPress={close}>Close</Button>}
-      >
-        <Text>
+      <s-admin-action heading="Undo">
+        <s-text>
           No backup found for this product yet. Run a backup from the Store
           Backup app first.
-        </Text>
-      </AdminAction>
+        </s-text>
+        <s-button slot="secondary-actions" onClick={() => shopify.close()}>
+          Close
+        </s-button>
+      </s-admin-action>
     );
   }
 
   const revertAllStatus =
     allError || allWarnings ? (
-      <BlockStack gap="small">
+      <s-stack direction="block" gap="small">
         {allError ? (
-          <BlockStack gap="none">
-            <Badge tone="critical">Revert failed</Badge>
-            <Text>{allError}</Text>
-          </BlockStack>
+          <s-stack direction="block" gap="none">
+            <s-badge tone="critical">Revert failed</s-badge>
+            <s-text>{allError}</s-text>
+          </s-stack>
         ) : null}
         {allWarnings ? (
-          <BlockStack gap="none">
-            <Badge tone="warning">Reverted with warnings</Badge>
-            <Text>Some parts of this product could not be reverted:</Text>
+          <s-stack direction="block" gap="none">
+            <s-badge tone="warning">Reverted with warnings</s-badge>
+            <s-text>Some parts of this product could not be reverted:</s-text>
             {allWarnings.map((w, i) => (
-              <Text key={i}>{w}</Text>
+              <s-text key={i}>{w}</s-text>
             ))}
-          </BlockStack>
+          </s-stack>
         ) : null}
-      </BlockStack>
+      </s-stack>
     ) : null;
 
   const rows = hist.rows || [];
@@ -207,94 +196,94 @@ function RestoreProductDetail() {
     // After a revert-all the history is cleared even when some steps failed —
     // keep showing that outcome instead of the clean "no changes" copy.
     return (
-      <AdminAction
-        title="Undo"
-        secondaryAction={<Button onPress={close}>Close</Button>}
-      >
-        {revertAllStatus || <Text>No changes since your last backup.</Text>}
-      </AdminAction>
+      <s-admin-action heading="Undo">
+        {revertAllStatus || <s-text>No changes since your last backup.</s-text>}
+        <s-button slot="secondary-actions" onClick={() => shopify.close()}>
+          Close
+        </s-button>
+      </s-admin-action>
     );
   }
 
   const groups = groupByEvent(rows);
 
   return (
-    <AdminAction
-      title="Undo"
-      primaryAction={
-        <Button
-          onPress={() => {
-            if (confirmAll) {
-              setConfirmAll(false);
-              revertAll();
-            } else {
-              setConfirmAll(true);
-            }
-          }}
-          disabled={allPending || anyRowPending}
-        >
-          {allPending
-            ? "Reverting all…"
-            : confirmAll
-              ? "Tap again to confirm"
-              : "Revert all"}
-        </Button>
-      }
-      secondaryAction={<Button onPress={close}>Close</Button>}
-    >
-      <BlockStack gap="base">
+    <s-admin-action heading="Undo">
+      <s-stack direction="block" gap="base">
         {revertAllStatus}
-        <Text>
+        <s-text>
           Every change since your last backup. Undo any one on its own.
-        </Text>
+        </s-text>
         {groups.map((g) => (
-          <Section key={g.changeId} heading={formatDate(g.changedAt)}>
-            <BlockStack gap="base">
+          <s-section key={g.changeId} heading={formatDate(g.changedAt)}>
+            <s-stack direction="block" gap="base">
               {g.rows.map((row) => {
                 const key = `${row.changeId}:${row.field}`;
                 return (
-                  <BlockStack key={key} gap="none">
-                    <InlineStack
-                      inlineAlignment="space-between"
-                      blockAlignment="center"
+                  <s-stack key={key} direction="block" gap="none">
+                    <s-stack
+                      direction="inline"
+                      justifyContent="space-between"
+                      alignItems="center"
                       gap="base"
                     >
-                      <InlineStack gap="small" blockAlignment="center">
-                        <Badge>{row.label}</Badge>
+                      <s-stack direction="inline" gap="small" alignItems="center">
+                        <s-badge>{row.label}</s-badge>
                         {row.change === "added" ? (
-                          <Badge tone="success">Added</Badge>
+                          <s-badge tone="success">Added</s-badge>
                         ) : row.change === "removed" ? (
-                          <Badge tone="critical">Removed</Badge>
+                          <s-badge tone="critical">Removed</s-badge>
                         ) : null}
-                        <Text>{row.text}</Text>
-                      </InlineStack>
+                        <s-text>{row.text}</s-text>
+                      </s-stack>
                       {row.revertable ? (
-                        <Button
-                          onPress={() => undo(row)}
+                        <s-button
+                          onClick={() => undo(row)}
                           disabled={pending[key] || allPending}
                         >
                           {pending[key] ? "Undoing…" : "Undo"}
-                        </Button>
+                        </s-button>
                       ) : null}
-                    </InlineStack>
+                    </s-stack>
                     {errors[key] ? (
-                      <Badge tone="critical">{errors[key]}</Badge>
+                      <s-badge tone="critical">{errors[key]}</s-badge>
                     ) : null}
-                  </BlockStack>
+                  </s-stack>
                 );
               })}
-            </BlockStack>
-          </Section>
+            </s-stack>
+          </s-section>
         ))}
-        <Text fontStyle="italic">
+        <s-text type="emphasis">
           Showing your recent changes. For anything older, restore a backup from
           the Store Backup app.
-        </Text>
-      </BlockStack>
-    </AdminAction>
+        </s-text>
+      </s-stack>
+      <s-button
+        slot="primary-action"
+        onClick={() => {
+          if (confirmAll) {
+            setConfirmAll(false);
+            revertAll();
+          } else {
+            setConfirmAll(true);
+          }
+        }}
+        disabled={allPending || anyRowPending}
+      >
+        {allPending
+          ? "Reverting all…"
+          : confirmAll
+            ? "Tap again to confirm"
+            : "Revert all"}
+      </s-button>
+      <s-button slot="secondary-actions" onClick={() => shopify.close()}>
+        Close
+      </s-button>
+    </s-admin-action>
   );
 }
 
-export default reactExtension("admin.product-details.action.render", () => (
-  <RestoreProductDetail />
-));
+export default () => {
+  render(<RestoreProductDetail />, document.body);
+};

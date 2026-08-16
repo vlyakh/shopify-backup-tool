@@ -1,16 +1,6 @@
-import { useEffect, useState } from "react";
-import {
-  reactExtension,
-  useApi,
-  AdminBlock,
-  BlockStack,
-  InlineStack,
-  Section,
-  Text,
-  Button,
-  Badge,
-  Divider,
-} from "@shopify/ui-extensions-react/admin";
+/** @jsxImportSource preact */
+import { render } from "preact";
+import { useEffect, useState } from "preact/hooks";
 
 function formatDate(s) {
   return new Date(s).toLocaleDateString("en-US", {
@@ -42,8 +32,7 @@ function groupByEvent(rows) {
  * server suppresses the undo's own webhook and hides the row, so the list clears.
  */
 function RestoreProductBlock() {
-  const { data } = useApi();
-  const productId = data.selected?.[0]?.id;
+  const productId = shopify.data.selected?.[0]?.id;
 
   const [hist, setHist] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -142,16 +131,16 @@ function RestoreProductBlock() {
   // A failed history request must not silently hide real pending changes.
   if (loadError) {
     return (
-      <AdminBlock title="Undo recent changes">
-        <BlockStack gap="base">
-          <Text>
+      <s-admin-block heading="Undo recent changes">
+        <s-stack direction="block" gap="base">
+          <s-text>
             Couldn't load the change history — this does not mean there are no
             changes since your last backup. Check your connection and try
             again.
-          </Text>
-          <Button onPress={load}>Retry</Button>
-        </BlockStack>
-      </AdminBlock>
+          </s-text>
+          <s-button onClick={load}>Retry</s-button>
+        </s-stack>
+      </s-admin-block>
     );
   }
 
@@ -162,84 +151,85 @@ function RestoreProductBlock() {
 
   const revertAllStatus =
     allError || allWarnings ? (
-      <BlockStack gap="small">
+      <s-stack direction="block" gap="small">
         {allError ? (
-          <BlockStack gap="none">
-            <Badge tone="critical">Revert failed</Badge>
-            <Text>{allError}</Text>
-          </BlockStack>
+          <s-stack direction="block" gap="none">
+            <s-badge tone="critical">Revert failed</s-badge>
+            <s-text>{allError}</s-text>
+          </s-stack>
         ) : null}
         {allWarnings ? (
-          <BlockStack gap="none">
-            <Badge tone="warning">Reverted with warnings</Badge>
-            <Text>Some parts of this product could not be reverted:</Text>
+          <s-stack direction="block" gap="none">
+            <s-badge tone="warning">Reverted with warnings</s-badge>
+            <s-text>Some parts of this product could not be reverted:</s-text>
             {allWarnings.map((w, i) => (
-              <Text key={i}>{w}</Text>
+              <s-text key={i}>{w}</s-text>
             ))}
-          </BlockStack>
+          </s-stack>
         ) : null}
-      </BlockStack>
+      </s-stack>
     ) : null;
 
   if (rows.length === 0) {
     return (
-      <AdminBlock title="Undo recent changes">
-        <BlockStack gap="base">{revertAllStatus}</BlockStack>
-      </AdminBlock>
+      <s-admin-block heading="Undo recent changes">
+        <s-stack direction="block" gap="base">{revertAllStatus}</s-stack>
+      </s-admin-block>
     );
   }
 
   const groups = groupByEvent(rows);
 
   return (
-    <AdminBlock title="Undo recent changes">
-      <BlockStack gap="base">
+    <s-admin-block heading="Undo recent changes">
+      <s-stack direction="block" gap="base">
         {revertAllStatus}
-        <Text>
+        <s-text>
           Every change since your last backup. Undo any one on its own.
-        </Text>
+        </s-text>
         {groups.map((g) => (
-          <Section key={g.changeId} heading={formatDate(g.changedAt)}>
-            <BlockStack gap="base">
+          <s-section key={g.changeId} heading={formatDate(g.changedAt)}>
+            <s-stack direction="block" gap="base">
               {g.rows.map((row) => {
                 const key = `${row.changeId}:${row.field}`;
                 return (
-                  <BlockStack key={key} gap="none">
-                    <InlineStack
-                      inlineAlignment="space-between"
-                      blockAlignment="center"
+                  <s-stack key={key} direction="block" gap="none">
+                    <s-stack
+                      direction="inline"
+                      justifyContent="space-between"
+                      alignItems="center"
                       gap="base"
                     >
-                      <InlineStack gap="small" blockAlignment="center">
-                        <Badge>{row.label}</Badge>
+                      <s-stack direction="inline" gap="small" alignItems="center">
+                        <s-badge>{row.label}</s-badge>
                         {row.change === "added" ? (
-                          <Badge tone="success">Added</Badge>
+                          <s-badge tone="success">Added</s-badge>
                         ) : row.change === "removed" ? (
-                          <Badge tone="critical">Removed</Badge>
+                          <s-badge tone="critical">Removed</s-badge>
                         ) : null}
-                        <Text>{row.text}</Text>
-                      </InlineStack>
+                        <s-text>{row.text}</s-text>
+                      </s-stack>
                       {row.revertable ? (
-                        <Button
-                          onPress={() => undo(row)}
+                        <s-button
+                          onClick={() => undo(row)}
                           disabled={pending[key] || allPending}
                         >
                           {pending[key] ? "Undoing…" : "Undo"}
-                        </Button>
+                        </s-button>
                       ) : null}
-                    </InlineStack>
+                    </s-stack>
                     {errors[key] ? (
-                      <Badge tone="critical">{errors[key]}</Badge>
+                      <s-badge tone="critical">{errors[key]}</s-badge>
                     ) : null}
-                  </BlockStack>
+                  </s-stack>
                 );
               })}
-            </BlockStack>
-          </Section>
+            </s-stack>
+          </s-section>
         ))}
-        <Divider />
-        <Button
-          onPress={() => {
+        <s-divider />
+        <s-button
+          onClick={() => {
             if (confirmAll) {
               setConfirmAll(false);
               revertAll();
@@ -254,16 +244,16 @@ function RestoreProductBlock() {
             : confirmAll
               ? "Tap again to confirm — overwrites with backup"
               : "Revert all to backup"}
-        </Button>
-        <Text fontStyle="italic">
+        </s-button>
+        <s-text type="emphasis">
           Showing your recent changes. For anything older, restore a backup from
           the Store Backup app.
-        </Text>
-      </BlockStack>
-    </AdminBlock>
+        </s-text>
+      </s-stack>
+    </s-admin-block>
   );
 }
 
-export default reactExtension("admin.product-details.block.render", () => (
-  <RestoreProductBlock />
-));
+export default () => {
+  render(<RestoreProductBlock />, document.body);
+};

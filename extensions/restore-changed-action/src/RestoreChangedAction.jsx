@@ -1,16 +1,6 @@
-import { useEffect, useState } from "react";
-import {
-  reactExtension,
-  useApi,
-  AdminAction,
-  BlockStack,
-  InlineStack,
-  Text,
-  Button,
-  Badge,
-  Divider,
-  ProgressIndicator,
-} from "@shopify/ui-extensions-react/admin";
+/** @jsxImportSource preact */
+import { render } from "preact";
+import { useEffect, useState } from "preact/hooks";
 
 function formatDate(dateString) {
   return new Date(dateString).toLocaleDateString("en-US", {
@@ -22,7 +12,6 @@ function formatDate(dateString) {
 }
 
 function RestoreChangedAction() {
-  const { close } = useApi();
   const [changedProducts, setChangedProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -100,12 +89,12 @@ function RestoreChangedAction() {
 
   if (loading) {
     return (
-      <AdminAction title="Restore Changed Products">
-        <BlockStack gap="base">
-          <ProgressIndicator size="small-200" />
-          <Text>Checking for changed products...</Text>
-        </BlockStack>
-      </AdminAction>
+      <s-admin-action heading="Restore Changed Products">
+        <s-stack direction="block" gap="base">
+          <s-spinner />
+          <s-text>Checking for changed products...</s-text>
+        </s-stack>
+      </s-admin-action>
     );
   }
 
@@ -113,61 +102,59 @@ function RestoreChangedAction() {
   // empty state.
   if (loadError) {
     return (
-      <AdminAction
-        title="Restore Changed Products"
-        secondaryAction={<Button onPress={close}>Close</Button>}
-      >
-        <BlockStack gap="base">
-          <Text>
+      <s-admin-action heading="Restore Changed Products">
+        <s-stack direction="block" gap="base">
+          <s-text>
             Couldn't check for changed products — this does not mean everything
             matches your backup. Check your connection and try again.
-          </Text>
-          <Button onPress={fetchChanged}>Retry</Button>
-        </BlockStack>
-      </AdminAction>
+          </s-text>
+          <s-button onClick={fetchChanged}>Retry</s-button>
+        </s-stack>
+        <s-button slot="secondary-actions" onClick={() => shopify.close()}>
+          Close
+        </s-button>
+      </s-admin-action>
     );
   }
 
   if (changedProducts.length === 0) {
     return (
-      <AdminAction
-        title="Restore Changed Products"
-        secondaryAction={<Button onPress={close}>Close</Button>}
-      >
-        <BlockStack gap="base">
-          <Text>All products match your last backup. Nothing to restore.</Text>
-          <Text>
+      <s-admin-action heading="Restore Changed Products">
+        <s-stack direction="block" gap="base">
+          <s-text>All products match your last backup. Nothing to restore.</s-text>
+          <s-text>
             Products that have been modified since your last backup will appear
             here. Run backups regularly to keep your data protected.
-          </Text>
-        </BlockStack>
-      </AdminAction>
+          </s-text>
+        </s-stack>
+        <s-button slot="secondary-actions" onClick={() => shopify.close()}>
+          Close
+        </s-button>
+      </s-admin-action>
     );
   }
 
   return (
-    <AdminAction
-      title="Restore Changed Products"
-      secondaryAction={<Button onPress={close}>Close</Button>}
-    >
-      <BlockStack gap="base">
-        <Text>
+    <s-admin-action heading="Restore Changed Products">
+      <s-stack direction="block" gap="base">
+        <s-text>
           {changedProducts.length} product
           {changedProducts.length !== 1 ? "s" : ""} changed since your last
           backup. Reverting overwrites the product with the backed-up version.
-        </Text>
-        <Divider />
+        </s-text>
+        <s-divider />
 
         {changedProducts.map((product) => (
-          <BlockStack key={product.backupItemId} gap="small">
-            <InlineStack
+          <s-stack key={product.backupItemId} direction="block" gap="small">
+            <s-stack
+              direction="inline"
               gap="small"
-              blockAlignment="center"
-              inlineAlignment="space-between"
+              alignItems="center"
+              justifyContent="space-between"
             >
-              <BlockStack gap="none">
-                <Text fontWeight="bold">{product.title}</Text>
-                <Text>
+              <s-stack direction="block" gap="none">
+                <s-text type="strong">{product.title}</s-text>
+                <s-text>
                   Changed {formatDate(product.changedAt)}
                   {product.changeCount > 1
                     ? ` \u00b7 ${product.changeCount} change${product.changeCount !== 1 ? "s" : ""}`
@@ -175,11 +162,11 @@ function RestoreChangedAction() {
                   {product.changedFields?.length > 0
                     ? ` \u00b7 ${product.changedFields.slice(0, 3).join(", ")}${product.changedFields.length > 3 ? "..." : ""}`
                     : ""}
-                </Text>
-              </BlockStack>
+                </s-text>
+              </s-stack>
 
               {reverted[product.backupItemId] ? (
-                <Badge
+                <s-badge
                   tone={
                     reverted[product.backupItemId] === "Reverted"
                       ? "success"
@@ -187,31 +174,34 @@ function RestoreChangedAction() {
                   }
                 >
                   {reverted[product.backupItemId]}
-                </Badge>
+                </s-badge>
               ) : errors[product.backupItemId] ? (
-                <BlockStack gap="none">
-                  <Badge tone="critical">Failed</Badge>
-                  <Text>{errors[product.backupItemId]}</Text>
-                </BlockStack>
+                <s-stack direction="block" gap="none">
+                  <s-badge tone="critical">Failed</s-badge>
+                  <s-text>{errors[product.backupItemId]}</s-text>
+                </s-stack>
               ) : (
-                <Button
-                  onPress={() => handleRevert(product.backupItemId)}
+                <s-button
+                  onClick={() => handleRevert(product.backupItemId)}
                   disabled={restoring[product.backupItemId]}
                 >
                   {restoring[product.backupItemId]
                     ? "Reverting..."
                     : "Revert"}
-                </Button>
+                </s-button>
               )}
-            </InlineStack>
-            <Divider />
-          </BlockStack>
+            </s-stack>
+            <s-divider />
+          </s-stack>
         ))}
-      </BlockStack>
-    </AdminAction>
+      </s-stack>
+      <s-button slot="secondary-actions" onClick={() => shopify.close()}>
+        Close
+      </s-button>
+    </s-admin-action>
   );
 }
 
-export default reactExtension("admin.product-index.action.render", () => (
-  <RestoreChangedAction />
-));
+export default () => {
+  render(<RestoreChangedAction />, document.body);
+};

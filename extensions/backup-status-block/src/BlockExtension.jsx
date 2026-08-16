@@ -1,14 +1,6 @@
-import { useEffect, useState } from "react";
-import {
-  reactExtension,
-  useApi,
-  AdminBlock,
-  BlockStack,
-  InlineStack,
-  Text,
-  Button,
-  Badge,
-} from "@shopify/ui-extensions-react/admin";
+/** @jsxImportSource preact */
+import { render } from "preact";
+import { useEffect, useState } from "preact/hooks";
 
 function formatTimeAgo(dateString) {
   const date = new Date(dateString);
@@ -26,12 +18,11 @@ function formatTimeAgo(dateString) {
 }
 
 function BackupStatusBlock() {
-  const { data } = useApi();
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
 
-  const productId = data.selected?.[0]?.id;
+  const productId = shopify.data.selected?.[0]?.id;
 
   async function fetchStatus() {
     setLoading(true);
@@ -58,9 +49,9 @@ function BackupStatusBlock() {
 
   if (loading) {
     return (
-      <AdminBlock title="Backup Status">
-        <Text>Loading...</Text>
-      </AdminBlock>
+      <s-admin-block heading="Backup Status">
+        <s-text>Loading...</s-text>
+      </s-admin-block>
     );
   }
 
@@ -68,15 +59,15 @@ function BackupStatusBlock() {
   // for a backend/network error.
   if (loadError) {
     return (
-      <AdminBlock title="Backup Status">
-        <BlockStack gap="small">
-          <Text>
+      <s-admin-block heading="Backup Status">
+        <s-stack direction="block" gap="small">
+          <s-text>
             Couldn't load the backup status — this does not mean the product
             is unprotected. Check your connection and try again.
-          </Text>
-          <Button onPress={fetchStatus}>Retry</Button>
-        </BlockStack>
-      </AdminBlock>
+          </s-text>
+          <s-button onClick={fetchStatus}>Retry</s-button>
+        </s-stack>
+      </s-admin-block>
     );
   }
 
@@ -84,36 +75,36 @@ function BackupStatusBlock() {
   const changeCount = status?.recentChanges || 0;
 
   return (
-    <AdminBlock title="Backup Status">
-      <BlockStack gap="small">
-        <InlineStack gap="small" blockAlignment="center">
-          <Badge tone={isProtected ? "success" : "warning"}>
+    <s-admin-block heading="Backup Status">
+      <s-stack direction="block" gap="small">
+        <s-stack direction="inline" gap="small" alignItems="center">
+          <s-badge tone={isProtected ? "success" : "warning"}>
             {isProtected ? "Protected" : "Not Protected"}
-          </Badge>
+          </s-badge>
           {isProtected && (
-            <Text>
+            <s-text>
               Last backup: {formatTimeAgo(status.lastBackedUp)}
-            </Text>
+            </s-text>
           )}
-        </InlineStack>
+        </s-stack>
 
         {changeCount > 0 && (
-          <Text>
+          <s-text>
             {changeCount} change{changeCount !== 1 ? "s" : ""} since last backup
-          </Text>
+          </s-text>
         )}
 
         {!isProtected && (
-          <Text>
+          <s-text>
             This product has not been backed up yet. Run a backup from the
             Store Backup app to protect it.
-          </Text>
+          </s-text>
         )}
-      </BlockStack>
-    </AdminBlock>
+      </s-stack>
+    </s-admin-block>
   );
 }
 
-export default reactExtension("admin.product-details.block.render", () => (
-  <BackupStatusBlock />
-));
+export default () => {
+  render(<BackupStatusBlock />, document.body);
+};
