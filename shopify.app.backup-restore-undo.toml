@@ -1,0 +1,93 @@
+# Production app config. The dev app lives in shopify.app.toml — the two are
+# separate Shopify apps because one app has exactly one App URL, so pointing
+# prod at a new host would break dev.
+#
+# Deploy with: shopify app deploy --config backup-restore-undo --allow-updates
+
+name = "Backup Restore Undo"
+client_id = "0e34782caa0161236bd53d796be4df30"
+application_url = "https://shopify-backup.azurewebsites.net"
+embedded = true
+
+[access_scopes]
+# Read scopes cover backups; write scopes cover restore/undo
+# (write_content: blog posts/pages/redirects, write_online_store_navigation: menus)
+# MUST match the SCOPES app setting on the Azure web app character for
+# character, or merchants hit a scope-mismatch reauth loop.
+scopes = "read_products,write_products,read_content,write_content,read_online_store_navigation,write_online_store_navigation,read_online_store_pages,read_publications,write_publications,read_inventory,write_inventory"
+optional_scopes = [ ]
+use_legacy_install_flow = false
+
+[auth]
+redirect_urls = [
+  "https://shopify-backup.azurewebsites.net/auth/callback",
+  "https://shopify-backup.azurewebsites.net/auth/shopify/callback",
+  "https://shopify-backup.azurewebsites.net/api/auth/callback",
+]
+
+[webhooks]
+# Pinned to 2026-04 to match app/shopify.server.ts (ApiVersion.April26) and the
+# extensions. The CLI defaults new configs to the newest version, but running
+# prod on a different webhook version than dev would mean dev testing never
+# exercises the payload shapes prod actually receives.
+api_version = "2026-04"
+
+  # App lifecycle webhooks
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/uninstalled"
+  topics = ["app/uninstalled"]
+
+  [[webhooks.subscriptions]]
+  topics = ["app/scopes_update"]
+  uri = "/webhooks/app/scopes_update"
+
+  # Billing lifecycle. Without this a subscription Shopify cancels on its own
+  # (declined card, or cancelled from Shopify's billing UI) would leave the
+  # cached plan on its old paid value until the merchant reopened Settings.
+  [[webhooks.subscriptions]]
+  topics = ["app_subscriptions/update"]
+  uri = "/webhooks/app_subscriptions/update"
+
+  # Product webhooks (premium tier - real-time change tracking)
+  [[webhooks.subscriptions]]
+  topics = ["products/create"]
+  uri = "/webhooks/products/create"
+
+  [[webhooks.subscriptions]]
+  topics = ["products/update"]
+  uri = "/webhooks/products/update"
+
+  [[webhooks.subscriptions]]
+  topics = ["products/delete"]
+  uri = "/webhooks/products/delete"
+
+  # Inventory item webhooks (cost / HS code / origin — not in the product payload)
+  [[webhooks.subscriptions]]
+  topics = ["inventory_items/update"]
+  uri = "/webhooks/inventory_items/update"
+
+  # Collection webhooks
+  [[webhooks.subscriptions]]
+  topics = ["collections/create"]
+  uri = "/webhooks/collections/create"
+
+  [[webhooks.subscriptions]]
+  topics = ["collections/update"]
+  uri = "/webhooks/collections/update"
+
+  [[webhooks.subscriptions]]
+  topics = ["collections/delete"]
+  uri = "/webhooks/collections/delete"
+
+  # Mandatory compliance webhooks (required for public apps)
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/customers/data_request"
+  compliance_topics = ["customers/data_request"]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/customers/redact"
+  compliance_topics = ["customers/redact"]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/shop/redact"
+  compliance_topics = ["shop/redact"]
