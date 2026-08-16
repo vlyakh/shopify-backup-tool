@@ -29,6 +29,13 @@ api_version = "2026-04"
   topics = ["app/scopes_update"]
   uri = "/webhooks/app/scopes_update"
 
+  # Billing lifecycle. Without this a subscription Shopify cancels on its own
+  # (declined card, or cancelled from Shopify's billing UI) would leave the
+  # cached plan on its old paid value until the merchant reopened Settings.
+  [[webhooks.subscriptions]]
+  topics = ["app_subscriptions/update"]
+  uri = "/webhooks/app_subscriptions/update"
+
   # Product webhooks (premium tier - real-time change tracking)
   [[webhooks.subscriptions]]
   topics = ["products/create"]
