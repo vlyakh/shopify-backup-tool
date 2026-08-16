@@ -3,15 +3,16 @@ import { json } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { graphqlWithRetry } from "../services/backup.server";
+import { isChangeTrackingEntitled } from "../services/changelog.server";
 
 /**
  * API endpoint for the Restore Changed Products extension.
  * Returns products that have been modified since the last completed backup.
  *
  * Strategy:
- * - Premium tier (webhooksEnabled): Query ChangeLog for UPDATED products after
- *   last backup, drop events the merchant fully undid, and only list products
- *   that still exist (deleted ones belong to the Recover Deleted flow).
+ * - Premium tier (plan + webhooksEnabled): Query ChangeLog for UPDATED products
+ *   after last backup, drop events the merchant fully undid, and only list
+ *   products that still exist (deleted ones belong to the Recover Deleted flow).
  * - All tiers fallback: compare every backed-up product's live updatedAt
  *   against the backup's completion time. Show mismatches.
  *
@@ -126,8 +127,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return cors(json({ products: [], message: "No completed backups yet. Run a backup first." }));
   }
 
-  // Strategy 1: Use ChangeLog if premium tier with webhooks
-  if (store?.webhooksEnabled) {
+  // Strategy 1: the Premium change ledger. Gated on the plan, not just
+  // webhooksEnabled — that flag is true for every install, so gating on it
+  // alone served this paid feature to Free and Standard stores too.
+  if (isChangeTrackingEntitled(store)) {
     // One pass, newest first: latest event + event count per product. Events
     // whose every visible field was undone per-field don't count — that
     // product matches its backup again.

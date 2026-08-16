@@ -25,10 +25,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const shop = session.shop;
 
   const store = await prisma.store.findUnique({ where: { id: shop } });
+  // Gate on the server, not just in the component below. The loader payload is
+  // serialised into the HTML and visible in the network tab, so querying the
+  // ledger and then hiding it behind an upsell banner handed the Premium data
+  // to every plan. Skip the queries entirely instead.
+  const isPremium = store?.plan === "PREMIUM";
 
   // hidden: false — don't show our own revert echoes as merchant changes
   const where = { storeId: shop, hidden: false };
-  const totalChanges = await prisma.changeLog.count({ where });
+  const totalChanges = isPremium ? await prisma.changeLog.count({ where }) : 0;
   const totalPages = Math.max(1, Math.ceil(totalChanges / PAGE_SIZE));
 
   const requestedPage = parseInt(
@@ -40,16 +45,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     totalPages,
   );
 
-  const changes = await prisma.changeLog.findMany({
-    where,
-    // id tiebreak keeps pages stable when many rows share a changedAt
-    orderBy: [{ changedAt: "desc" }, { id: "desc" }],
-    skip: (page - 1) * PAGE_SIZE,
-    take: PAGE_SIZE,
-  });
+  const changes = isPremium
+    ? await prisma.changeLog.findMany({
+        where,
+        // id tiebreak keeps pages stable when many rows share a changedAt
+        orderBy: [{ changedAt: "desc" }, { id: "desc" }],
+        skip: (page - 1) * PAGE_SIZE,
+        take: PAGE_SIZE,
+      })
+    : [];
 
   return json({
-    isPremium: store?.plan === "PREMIUM",
+    isPremium,
     page,
     totalPages,
     totalChanges,

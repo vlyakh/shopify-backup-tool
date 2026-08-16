@@ -1,6 +1,27 @@
 import prisma from "../db.server";
 import { storage } from "./storage.server";
-import type { ResourceType, ChangeAction } from "@prisma/client";
+import type { ResourceType, ChangeAction, Plan } from "@prisma/client";
+
+/**
+ * Whether a store is entitled to the webhook-driven change ledger.
+ *
+ * Real-time change tracking, the change history and field-level undo are all
+ * sold as Premium ($19/mo). This used to be gated on `webhooksEnabled` alone —
+ * but afterAuth sets that true for every install regardless of plan and
+ * nothing ever keys it on the plan, so every Free and Standard store got the
+ * paid tier's flagship feature for nothing. Both conditions are required:
+ * webhooksEnabled remains the lifecycle switch (uninstall turns it off), and
+ * the plan is the entitlement.
+ *
+ * Non-Premium stores are not left without a changed-products view — the
+ * all-tiers fallback in api.changed-products compares each backed-up product's
+ * live updatedAt against the backup instead.
+ */
+export function isChangeTrackingEntitled(
+  store: { plan: Plan; webhooksEnabled: boolean } | null | undefined,
+): boolean {
+  return !!store && store.webhooksEnabled && store.plan === "PREMIUM";
+}
 
 /**
  * The most recent ChangeLog row holding a FULL snapshot of this resource.
@@ -48,9 +69,9 @@ export async function recordChange(
   hidden = false,
   webhookEventId?: string,
 ): Promise<string | null> {
-  // Check if store has premium plan with webhooks enabled
+  // Premium entitlement + the lifecycle switch — see isChangeTrackingEntitled.
   const store = await prisma.store.findUnique({ where: { id: storeId } });
-  if (!store?.webhooksEnabled) return null;
+  if (!isChangeTrackingEntitled(store)) return null;
 
   if (webhookEventId) {
     const existing = await prisma.changeLog.findFirst({
