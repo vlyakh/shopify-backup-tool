@@ -24,10 +24,20 @@ import { deleteBackupBlobs } from "../services/backup.server";
  * recovery path, so it must not be reachable by merchants on a paid backup
  * app. Hiding the nav link is not a gate: the URL is guessable and
  * authenticate.admin only proves "this request belongs to some shop", not
- * "this is the developer". Refuse the route outright in production.
+ * "this is the developer".
+ *
+ * Gated on an explicit opt-in rather than NODE_ENV. NODE_ENV also selects
+ * billing test mode and the React/Remix runtime, and BOTH environments run
+ * NODE_ENV=production (dev included, so its bundle matches prod), so it
+ * cannot tell them apart. Unset means disabled: production is safe by
+ * default and turning this on is always deliberate.
  */
+export function devToolsEnabled(): boolean {
+  return process.env.ENABLE_DEV_TOOLS === "true";
+}
+
 function assertDevOnly(): void {
-  if (process.env.NODE_ENV === "production") {
+  if (!devToolsEnabled()) {
     throw new Response("Not Found", { status: 404 });
   }
 }

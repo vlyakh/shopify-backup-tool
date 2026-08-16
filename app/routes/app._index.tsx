@@ -67,7 +67,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     shop,
     store,
     // "Reset data" is developer tooling — see the guard in app.reset.tsx.
-    showDevTools: process.env.NODE_ENV !== "production",
+    showDevTools: process.env.ENABLE_DEV_TOOLS === "true",
     schedule: schedule
       ? {
           enabled: schedule.enabled,

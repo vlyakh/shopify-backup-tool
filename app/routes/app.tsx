@@ -17,8 +17,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // /app/reset is developer tooling (it reads back what the webhook recorded
     // and offers "start from a clean slate" wipes), not a merchant feature.
     // Decided from the loader rather than in the component so the gate is the
-    // server's, matching the route's own guard.
-    showDevTools: process.env.NODE_ENV !== "production",
+    // server's, matching the route's own guard. See app.reset.tsx for why this
+    // is an explicit opt-in rather than a NODE_ENV check.
+    showDevTools: process.env.ENABLE_DEV_TOOLS === "true",
   };
 };
 
