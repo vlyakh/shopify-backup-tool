@@ -172,11 +172,56 @@ async function failStalledBackups(now: Date): Promise<void> {
 }
 
 /**
+ * Applies retention shrinks whose grace period has elapsed.
+ *
+ * A downgrade or lapsed subscription stages the smaller window instead of
+ * applying it (see planTransition in app/routes/app.settings.tsx), so the
+ * merchant keeps their history long enough to notice and resubscribe. Once
+ * pendingRetentionAt passes, the shrink lands here and the sweep below starts
+ * enforcing it. Prisma can't copy a column to another column in updateMany,
+ * hence the per-store update.
+ */
+async function applyDueRetentionChanges(now: Date): Promise<void> {
+  const due = await prisma.store.findMany({
+    where: {
+      pendingRetentionAt: { lte: now },
+      pendingRetentionDays: { not: null },
+    },
+    select: { id: true, pendingRetentionDays: true, retentionDays: true },
+  });
+
+  for (const store of due) {
+    if (store.pendingRetentionDays === null) continue;
+    try {
+      await prisma.store.update({
+        where: { id: store.id },
+        data: {
+          retentionDays: store.pendingRetentionDays,
+          pendingRetentionDays: null,
+          pendingRetentionAt: null,
+        },
+      });
+      console.log(
+        `[Scheduler] Retention grace elapsed for ${store.id}: ` +
+          `${store.retentionDays}d -> ${store.pendingRetentionDays}d`,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(
+        `[Scheduler] Failed to apply retention change for ${store.id}: ${message}`,
+      );
+    }
+  }
+}
+
+/**
  * Enforces each store's retentionDays: deletes COMPLETED/FAILED backups older
  * than the window, always keeping the store's most recent COMPLETED backup
  * (never delete the last good snapshot, no matter how old).
  */
 async function enforceRetention(): Promise<void> {
+  await applyDueRetentionChanges(new Date());
+
   const stores = await prisma.store.findMany({
     where: { backups: { some: {} } },
   });

@@ -11,34 +11,23 @@ import {
   Button,
   Select,
   Checkbox,
+  Banner,
 } from "@shopify/polaris";
 import { useState } from "react";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { authenticate, STANDARD_PLAN, PREMIUM_PLAN } from "../shopify.server";
+import {
+  TRIAL_DAYS,
+  RETENTION_GRACE_DAYS,
+  planRetentionDays,
+  type PlanId,
+} from "../billing";
 import prisma from "../db.server";
 import { storage } from "../services/storage.server";
 import { computeNextRunAt } from "../services/scheduler.server";
+import { planTransition } from "../services/plan.server";
 
 const IS_TEST_BILLING = process.env.NODE_ENV !== "production";
-
-// Map an active Shopify subscription plan name to our stored plan settings.
-// Deliberately does NOT touch webhooksEnabled: afterAuth turns it on for every
-// install, and it is the master switch for the change ledger that also feeds
-// the dashboard "Restore changes" flow. Setting it false here on a plan
-// transition (e.g. FREE -> STANDARD, or a Premium lapse) would silently stop
-// change tracking until the next reinstall. Plan gating for the Premium
-// history UI happens in its route loader instead.
-function planSettings(plan: "FREE" | "STANDARD" | "PREMIUM") {
-  switch (plan) {
-    case "PREMIUM":
-      return { plan, retentionDays: 90 };
-    case "STANDARD":
-      return { plan, retentionDays: 30 };
-    default:
-      // Automatic backups are a paid entitlement; drop them on downgrade.
-      return { plan, retentionDays: 7, autoBackupEnabled: false };
-  }
-}
 
 const PLANS = [
   {
@@ -56,6 +45,7 @@ const PLANS = [
     name: "Standard",
     price: "$9/mo",
     features: [
+      `${TRIAL_DAYS}-day free trial`,
       "Daily automatic backups",
       "Products, collections, pages, blogs, redirects, menus",
       "30-day retention",
@@ -67,6 +57,7 @@ const PLANS = [
     name: "Premium",
     price: "$19/mo",
     features: [
+      `${TRIAL_DAYS}-day free trial`,
       "Everything in Standard",
       "Real-time change tracking via webhooks",
       "90-day retention",
@@ -88,7 +79,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   });
 
   const activeName = appSubscriptions[0]?.name;
-  const actualPlan: "FREE" | "STANDARD" | "PREMIUM" =
+  const actualPlan: PlanId =
     activeName === PREMIUM_PLAN
       ? "PREMIUM"
       : activeName === STANDARD_PLAN
@@ -97,11 +88,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   let store = await prisma.store.findUnique({ where: { id: session.shop } });
 
-  // Reconcile the cached plan with reality.
+  // Reconcile the cached plan with reality. This is the path a lapsed
+  // subscription takes — the merchant never clicked anything, so the staged
+  // shrink in planTransition is what stops it quietly costing them history.
   if (store && store.plan !== actualPlan) {
     store = await prisma.store.update({
       where: { id: session.shop },
-      data: planSettings(actualPlan),
+      data: planTransition(store, actualPlan),
     });
   }
 
@@ -113,6 +106,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         autoBackupEnabled: false,
         autoBackupHour: 3,
         retentionDays: 7,
+        pendingRetentionDays: null,
+        pendingRetentionAt: null,
       },
   });
 };
@@ -202,9 +197,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         });
       }
 
+      const current = await prisma.store.findUnique({ where: { id: shop } });
       await prisma.store.update({
         where: { id: shop },
-        data: planSettings("FREE"),
+        data: planTransition(current, "FREE"),
       });
       return json({ success: true });
     }
@@ -265,8 +261,31 @@ export default function Settings() {
   };
 
   const handleSubscribe = (plan: string) => {
+    // Downgrading is as destructive as "Delete All Backups" below, just on a
+    // delay — say so before it happens, and name the deadline.
+    if (plan === "FREE" && store.plan !== "FREE") {
+      const current = planRetentionDays(store.plan as PlanId);
+      const after = planRetentionDays("FREE");
+      if (
+        !window.confirm(
+          `Downgrade to Free?\n\n` +
+            `Automatic backups stop right away.\n\n` +
+            `Your backup history stays at ${current} days for another ` +
+            `${RETENTION_GRACE_DAYS} days. After that, backups older than ` +
+            `${after} days are permanently deleted and cannot be recovered.\n\n` +
+            `Resubscribing before then keeps everything.`,
+        )
+      ) {
+        return;
+      }
+    }
     submit({ action: "subscribe", plan }, { method: "POST" });
   };
+
+  // Server sends Dates as ISO strings through json().
+  const pendingAt = store.pendingRetentionAt
+    ? new Date(store.pendingRetentionAt)
+    : null;
 
   const handleDeleteAllBackups = () => {
     if (
@@ -288,6 +307,22 @@ export default function Settings() {
     <Page title="Settings">
       <TitleBar title="Settings" />
       <BlockStack gap="500">
+        {/* A retention shrink is staged — the merchant still has time to act */}
+        {pendingAt && store.pendingRetentionDays !== null && (
+          <Banner
+            title="Your backup history is scheduled to shrink"
+            tone="warning"
+            action={{ content: "See plans", url: "/app/settings" }}
+          >
+            <p>
+              Backups are still kept for {store.retentionDays} days. On{" "}
+              {pendingAt.toISOString().slice(0, 10)} this drops to{" "}
+              {store.pendingRetentionDays} days, and older backups are
+              permanently deleted. Resubscribe before then to keep them.
+            </p>
+          </Banner>
+        )}
+
         {/* Plans */}
         <Text as="h2" variant="headingLg">Plans</Text>
         <Layout>
@@ -314,7 +349,11 @@ export default function Settings() {
                       onClick={() => handleSubscribe(plan.id)}
                       loading={isSaving}
                     >
-                      {plan.id === "FREE" ? "Downgrade" : "Upgrade"}
+                      {plan.id === "FREE"
+                        ? "Downgrade"
+                        : store.plan === "FREE"
+                          ? "Start free trial"
+                          : "Upgrade"}
                     </Button>
                   )}
                 </BlockStack>

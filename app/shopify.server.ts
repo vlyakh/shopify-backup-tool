@@ -7,6 +7,7 @@ import {
 } from "@shopify/shopify-app-remix/server";
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
 import prisma from "./db.server";
+import { TRIAL_DAYS } from "./billing";
 
 // Billing plan names. These are the keys merchants are subscribed to and the
 // values passed to billing.request / billing.check.
@@ -32,7 +33,10 @@ const shopify = shopifyApp({
   sessionStorage: new PrismaSessionStorage(prisma),
   distribution: AppDistribution.AppStore,
   billing: {
+    // trialDays must match the trial advertised on the App Store listing —
+    // review checks that the listing and what the app actually charges agree.
     [STANDARD_PLAN]: {
+      trialDays: TRIAL_DAYS,
       lineItems: [
         {
           amount: 9,
@@ -42,6 +46,7 @@ const shopify = shopifyApp({
       ],
     },
     [PREMIUM_PLAN]: {
+      trialDays: TRIAL_DAYS,
       lineItems: [
         {
           amount: 19,

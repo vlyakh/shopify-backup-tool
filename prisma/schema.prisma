@@ -40,6 +40,16 @@ model Store {
   autoBackupHour    Int     @default(3) // UTC hour for daily backup
   retentionDays     Int     @default(7)
 
+  // A staged *shrink* of retentionDays, from a downgrade or a lapsed
+  // subscription. Applying a smaller window immediately would let the hourly
+  // retention sweep permanently delete history the merchant may still want,
+  // on paths they never confirmed (lapsed trial, declined card, cancellation
+  // from Shopify's own billing UI). So the larger window stays in force and
+  // the scheduler applies this once pendingRetentionAt passes. Re-subscribing
+  // clears both fields. See RETENTION_GRACE_DAYS in app/billing.ts.
+  pendingRetentionDays Int?
+  pendingRetentionAt   DateTime?
+
   // Webhook settings (premium tier)
   webhooksEnabled Boolean @default(false)
 
