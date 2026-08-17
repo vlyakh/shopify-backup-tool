@@ -46,3 +46,19 @@ export function planRetentionDays(plan: PlanId): number {
  * there is nothing to protect against.
  */
 export const RETENTION_GRACE_DAYS = 30;
+
+/**
+ * Ordering of the plans, so "is this a downgrade?" is a comparison rather
+ * than a special case for FREE. Premium -> Standard is a downgrade too: it
+ * shrinks retention 90 -> 30 days and must warn like any other.
+ */
+export function planRank(plan: PlanId): number {
+  switch (plan) {
+    case "PREMIUM":
+      return 2;
+    case "STANDARD":
+      return 1;
+    default:
+      return 0;
+  }
+}

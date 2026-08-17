@@ -20,6 +20,7 @@ import {
   TRIAL_DAYS,
   RETENTION_GRACE_DAYS,
   planRetentionDays,
+  planRank,
   type PlanId,
 } from "../billing";
 import prisma from "../db.server";
@@ -270,10 +271,12 @@ export default function Settings() {
 
   const handleSubscribe = (plan: string) => {
     // Downgrading is as destructive as "Delete All Backups" below, just on a
-    // delay — say so before it happens, and name the deadline.
-    if (plan === "FREE" && store.plan !== "FREE") {
+    // delay — say so before it happens, and name the deadline. Any drop in
+    // rank counts, not just a drop to Free: Premium -> Standard shrinks
+    // retention 90 -> 30 days and silently expires 60 days of history.
+    if (planRank(plan as PlanId) < planRank(store.plan as PlanId)) {
       const current = planRetentionDays(store.plan as PlanId);
-      const after = planRetentionDays("FREE");
+      const after = planRetentionDays(plan as PlanId);
       if (
         !window.confirm(
           `Downgrade to Free?\n\n` +
@@ -357,7 +360,8 @@ export default function Settings() {
                       onClick={() => handleSubscribe(plan.id)}
                       loading={isSaving}
                     >
-                      {plan.id === "FREE"
+                      {planRank(plan.id as PlanId) <
+                      planRank(store.plan as PlanId)
                         ? "Downgrade"
                         : store.plan === "FREE"
                           ? "Start free trial"
