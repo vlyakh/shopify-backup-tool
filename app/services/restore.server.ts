@@ -615,7 +615,9 @@ async function restoreBlogPost(
     // (as of 2025-01). We use the REST Admin API instead.
     const articleBody: Record<string, unknown> = {
       title: data.title,
-      body_html: data.contentHtml,
+      // `body` since API 2026-04; `contentHtml` in blobs written before that,
+      // which must still restore.
+      body_html: data.body ?? data.contentHtml,
       summary_html: data.summary || undefined,
       tags: Array.isArray(data.tags) ? (data.tags as string[]).join(", ") : data.tags,
       handle: data.handle,

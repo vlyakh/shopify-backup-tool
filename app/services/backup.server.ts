@@ -197,7 +197,7 @@ const BLOG_ARTICLES_QUERY = `#graphql
         id
         title
         handle
-        contentHtml
+        body
         summary
         tags
         blog {
@@ -207,10 +207,6 @@ const BLOG_ARTICLES_QUERY = `#graphql
         image {
           url
           altText
-        }
-        seo {
-          title
-          description
         }
         isPublished
       }
