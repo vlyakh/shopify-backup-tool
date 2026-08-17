@@ -208,7 +208,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // is NOT changed here - it is reconciled in the loader once the merchant
     // returns from approving the charge.
     const planName = plan === "PREMIUM" ? PREMIUM_PLAN : STANDARD_PLAN;
-    const returnUrl = `${process.env.SHOPIFY_APP_URL}/app/settings`;
+    // Return the merchant INTO the embedded admin, not to the app's own
+    // domain. Shopify sends them here in the TOP-LEVEL window after they
+    // approve the charge, so a raw app URL lands them outside the admin
+    // iframe with no session token — the app then bounces them to
+    // /auth/login and asks for a shop domain, stranding them mid-purchase
+    // even though the subscription succeeded. The admin deep link re-enters
+    // the embedded context, where authenticate.admin can do token exchange.
+    const shopHandle = shop.replace(/\.myshopify\.com$/, "");
+    const returnUrl =
+      `https://admin.shopify.com/store/${shopHandle}` +
+      `/apps/${process.env.SHOPIFY_API_KEY}/app/settings`;
 
     return billing.request({
       plan: planName,
