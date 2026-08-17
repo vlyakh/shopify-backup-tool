@@ -11,6 +11,15 @@ form below is the source to cut from.
 
 ---
 
+## Privacy policy URL (required by App Store review)
+
+https://shopify-backup.azurewebsites.net/privacy
+
+Served by the app itself as a public, unauthenticated route — no external
+hosting needed, and it cannot drift out of sync with a separately hosted copy.
+
+---
+
 ## Listing fields (paste these)
 
 **App name** (30 char limit)
@@ -107,16 +116,6 @@ The app adds blocks and actions inside your store's admin, not just in its own d
 - Undo Product Changes on the product page, with the change history and the revert action together
 - Recover Deleted Products, from the product list
 - Restore Changed Products, as a bulk action on the product list
-
-PRICING YOU CAN PREDICT
-
-Free — $0. Manual backups only, products only, 7-day retention.
-
-Standard — $9/month, 14-day free trial. Daily automatic backups; products, collections, pages, blogs, redirects, menus; 30-day retention; one-click product restore.
-
-Premium — $19/month, 14-day free trial. Everything in Standard, plus real-time change tracking, change history with changed-field detail, per-field undo, restore-changed-products, and 90-day retention.
-
-Flat monthly price. No order metering, no usage add-ons — the bill does not grow just because your store did.
 
 WHAT IT DOES NOT COVER
 
