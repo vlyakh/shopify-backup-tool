@@ -25,9 +25,7 @@ import {
 import prisma from "../db.server";
 import { storage } from "../services/storage.server";
 import { computeNextRunAt } from "../services/scheduler.server";
-import { planTransition } from "../services/plan.server";
-
-const IS_TEST_BILLING = process.env.NODE_ENV !== "production";
+import { planTransition, isTestBilling } from "../services/plan.server";
 
 const PLANS = [
   {
@@ -75,7 +73,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // the merchant returns from approving a charge, or after a charge lapses).
   const { appSubscriptions } = await billing.check({
     plans: [STANDARD_PLAN, PREMIUM_PLAN],
-    isTest: IS_TEST_BILLING,
+    isTest: isTestBilling(),
   });
 
   const activeName = appSubscriptions[0]?.name;
@@ -187,12 +185,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       // Downgrade: cancel any active subscription, then drop the cached plan.
       const { appSubscriptions } = await billing.check({
         plans: [STANDARD_PLAN, PREMIUM_PLAN],
-        isTest: IS_TEST_BILLING,
+        isTest: isTestBilling(),
       });
       for (const sub of appSubscriptions) {
         await billing.cancel({
           subscriptionId: sub.id,
-          isTest: IS_TEST_BILLING,
+          isTest: isTestBilling(),
           prorate: true,
         });
       }
@@ -214,7 +212,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     return billing.request({
       plan: planName,
-      isTest: IS_TEST_BILLING,
+      isTest: isTestBilling(),
       returnUrl,
     });
   }

@@ -5,6 +5,39 @@ import {
 } from "../billing";
 
 /**
+ * Whether to create TEST charges (Shopify records the subscription but no
+ * money moves) instead of real ones.
+ *
+ * Defaults to NODE_ENV, but is overridable, because the two are not the same
+ * question. Both deployments run NODE_ENV=production — dev included, since its
+ * bundle is built as production and its devDependencies are pruned — so
+ * NODE_ENV alone can never say "this is a throwaway test charge". And the
+ * Billing API is unavailable to non-public apps, so billing can only ever be
+ * exercised against a public app, which is the production one.
+ *
+ * Set SHOPIFY_BILLING_TEST=true to force test charges while verifying the
+ * billing flow, then REMOVE IT. Leaving it on means every merchant subscribes
+ * for free — hence the startup warning below, which is deliberately loud.
+ */
+export function isTestBilling(): boolean {
+  const override = process.env.SHOPIFY_BILLING_TEST;
+  if (override === "true") return true;
+  if (override === "false") return false;
+  return process.env.NODE_ENV !== "production";
+}
+
+if (
+  process.env.SHOPIFY_BILLING_TEST === "true" &&
+  process.env.NODE_ENV === "production"
+) {
+  console.warn(
+    "[Billing] *** TEST BILLING IS ON IN A PRODUCTION BUILD *** " +
+      "Every subscription is a test charge and NO MONEY WILL BE COLLECTED. " +
+      "Remove the SHOPIFY_BILLING_TEST app setting once testing is done.",
+  );
+}
+
+/**
  * The stored settings for a plan transition.
  *
  * Deliberately does NOT touch webhooksEnabled: afterAuth turns it on for every
