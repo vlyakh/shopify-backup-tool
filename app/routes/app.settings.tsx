@@ -15,7 +15,15 @@ import {
 } from "@shopify/polaris";
 import { useState } from "react";
 import { TitleBar } from "@shopify/app-bridge-react";
-import { authenticate, STANDARD_PLAN, PREMIUM_PLAN } from "../shopify.server";
+import {
+  authenticate,
+  STANDARD_PLAN,
+  PREMIUM_PLAN,
+  STANDARD_TRIAL_PLAN,
+  PREMIUM_TRIAL_PLAN,
+  ALL_PLANS,
+  tierForPlanName,
+} from "../shopify.server";
 import {
   TRIAL_DAYS,
   RETENTION_GRACE_DAYS,
@@ -44,7 +52,7 @@ const PLANS = [
     name: "Standard",
     price: "$9/mo",
     features: [
-      `${TRIAL_DAYS}-day free trial`,
+      `${TRIAL_DAYS}-day free trial for new subscribers`,
       "Daily automatic backups",
       "Products, collections, pages, blogs, redirects, menus",
       "30-day retention",
@@ -56,7 +64,7 @@ const PLANS = [
     name: "Premium",
     price: "$19/mo",
     features: [
-      `${TRIAL_DAYS}-day free trial`,
+      `${TRIAL_DAYS}-day free trial for new subscribers`,
       "Everything in Standard",
       "Real-time change tracking via webhooks",
       "90-day retention",
@@ -73,17 +81,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // of truth - the DB plan is only a cache that we reconcile here (e.g. after
   // the merchant returns from approving a charge, or after a charge lapses).
   const { appSubscriptions } = await billing.check({
-    plans: [STANDARD_PLAN, PREMIUM_PLAN],
+    plans: [...ALL_PLANS],
     isTest: isTestBilling(),
   });
 
   const activeName = appSubscriptions[0]?.name;
-  const actualPlan: PlanId =
-    activeName === PREMIUM_PLAN
-      ? "PREMIUM"
-      : activeName === STANDARD_PLAN
-        ? "STANDARD"
-        : "FREE";
+  const actualPlan: PlanId = tierForPlanName(activeName);
 
   let store = await prisma.store.findUnique({ where: { id: session.shop } });
 
@@ -97,6 +100,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     });
   }
 
+  // Burn the trial the first time this shop is seen on a paid subscription.
+  // Shopify grants trialDays per subscription and never checks whether the
+  // shop already had one, so without this a merchant could switch plans (or
+  // cancel and resubscribe) for a fresh 14 free days, forever.
+  if (store && actualPlan !== "FREE" && !store.trialUsedAt) {
+    store = await prisma.store.update({
+      where: { id: session.shop },
+      data: { trialUsedAt: new Date() },
+    });
+  }
+
   return json({
     store:
       store || {
@@ -107,6 +121,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         retentionDays: 7,
         pendingRetentionDays: null,
         pendingRetentionAt: null,
+        trialUsedAt: null,
       },
   });
 };
@@ -185,7 +200,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (plan === "FREE") {
       // Downgrade: cancel any active subscription, then drop the cached plan.
       const { appSubscriptions } = await billing.check({
-        plans: [STANDARD_PLAN, PREMIUM_PLAN],
+        plans: [...ALL_PLANS],
         isTest: isTestBilling(),
       });
       for (const sub of appSubscriptions) {
@@ -208,7 +223,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // Shopify's confirmation page (it throws a redirect response). The DB plan
     // is NOT changed here - it is reconciled in the loader once the merchant
     // returns from approving the charge.
-    const planName = plan === "PREMIUM" ? PREMIUM_PLAN : STANDARD_PLAN;
+    // Offer the trial variant only to a shop that has not used its trial.
+    const storeRow = await prisma.store.findUnique({ where: { id: shop } });
+    const withTrial = !storeRow?.trialUsedAt;
+    const planName =
+      plan === "PREMIUM"
+        ? withTrial
+          ? PREMIUM_TRIAL_PLAN
+          : PREMIUM_PLAN
+        : withTrial
+          ? STANDARD_TRIAL_PLAN
+          : STANDARD_PLAN;
     // Return the merchant INTO the embedded admin, not to the app's own
     // domain. Shopify sends them here in the TOP-LEVEL window after they
     // approve the charge, so a raw app URL lands them outside the admin

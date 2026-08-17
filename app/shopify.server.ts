@@ -11,8 +11,38 @@ import { TRIAL_DAYS } from "./billing";
 
 // Billing plan names. These are the keys merchants are subscribed to and the
 // values passed to billing.request / billing.check.
+//
+// Each tier is declared TWICE: once with the trial and once without. Shopify
+// applies trialDays per SUBSCRIPTION and never tracks whether a shop already
+// had one, so with a single trial-bearing plan a merchant could switch
+// Standard -> Premium -> Standard (or cancel and resubscribe) and collect a
+// fresh 14 free days every time, indefinitely. billing.request takes no
+// per-request trialDays override — only a plan name — so the choice has to be
+// two plans, picked against Store.trialUsedAt.
+//
+// The names are merchant-visible on the charge, hence the readable suffix
+// rather than something like "standard-no-trial".
 export const STANDARD_PLAN = "Standard";
 export const PREMIUM_PLAN = "Premium";
+export const STANDARD_TRIAL_PLAN = `Standard (${TRIAL_DAYS}-day trial)` as const;
+export const PREMIUM_TRIAL_PLAN = `Premium (${TRIAL_DAYS}-day trial)` as const;
+
+/** Every plan name billing.check must be asked about. */
+export const ALL_PLANS = [
+  STANDARD_PLAN,
+  PREMIUM_PLAN,
+  STANDARD_TRIAL_PLAN,
+  PREMIUM_TRIAL_PLAN,
+] as const;
+
+/** Maps any of the four subscription names back to the tier it grants. */
+export function tierForPlanName(
+  name: string | undefined,
+): "FREE" | "STANDARD" | "PREMIUM" {
+  if (name === PREMIUM_PLAN || name === PREMIUM_TRIAL_PLAN) return "PREMIUM";
+  if (name === STANDARD_PLAN || name === STANDARD_TRIAL_PLAN) return "STANDARD";
+  return "FREE";
+}
 
 // Reinstall cleanups (blob wipe + re-baseline backup) still running in this
 // process, keyed by shop. afterAuth can fire more than once around a single
@@ -35,24 +65,28 @@ const shopify = shopifyApp({
   billing: {
     // trialDays must match the trial advertised on the App Store listing —
     // review checks that the listing and what the app actually charges agree.
-    [STANDARD_PLAN]: {
+    // The trial variants are offered only to shops that have not used their
+    // trial yet; everyone else gets the plain plan. Same price either way.
+    [STANDARD_TRIAL_PLAN]: {
       trialDays: TRIAL_DAYS,
       lineItems: [
-        {
-          amount: 9,
-          currencyCode: "USD",
-          interval: BillingInterval.Every30Days,
-        },
+        { amount: 9, currencyCode: "USD", interval: BillingInterval.Every30Days },
+      ],
+    },
+    [PREMIUM_TRIAL_PLAN]: {
+      trialDays: TRIAL_DAYS,
+      lineItems: [
+        { amount: 19, currencyCode: "USD", interval: BillingInterval.Every30Days },
+      ],
+    },
+    [STANDARD_PLAN]: {
+      lineItems: [
+        { amount: 9, currencyCode: "USD", interval: BillingInterval.Every30Days },
       ],
     },
     [PREMIUM_PLAN]: {
-      trialDays: TRIAL_DAYS,
       lineItems: [
-        {
-          amount: 19,
-          currencyCode: "USD",
-          interval: BillingInterval.Every30Days,
-        },
+        { amount: 19, currencyCode: "USD", interval: BillingInterval.Every30Days },
       ],
     },
   },

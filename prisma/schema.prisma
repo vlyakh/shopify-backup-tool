@@ -50,6 +50,13 @@ model Store {
   pendingRetentionDays Int?
   pendingRetentionAt   DateTime?
 
+  // When this shop first held an active PAID subscription. Shopify applies
+  // trialDays per subscription and never tracks whether a shop already had a
+  // trial, so without this a merchant could switch plans (or cancel and
+  // resubscribe) to collect a fresh free trial indefinitely. Once set, the
+  // shop is offered the no-trial plan variants.
+  trialUsedAt DateTime?
+
   // Webhook settings (premium tier)
   webhooksEnabled Boolean @default(false)
 

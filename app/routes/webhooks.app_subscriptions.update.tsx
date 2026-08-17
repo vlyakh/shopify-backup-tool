@@ -1,9 +1,5 @@
 import type { ActionFunctionArgs } from "@remix-run/node";
-import {
-  authenticate,
-  STANDARD_PLAN,
-  PREMIUM_PLAN,
-} from "../shopify.server";
+import { authenticate, tierForPlanName } from "../shopify.server";
 import prisma from "../db.server";
 import { planTransition } from "../services/plan.server";
 import type { PlanId } from "../billing";
@@ -36,12 +32,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   let plan: PlanId;
   if (status === "ACTIVE") {
-    plan =
-      name === PREMIUM_PLAN
-        ? "PREMIUM"
-        : name === STANDARD_PLAN
-          ? "STANDARD"
-          : "FREE";
+    plan = tierForPlanName(name);
   } else if (
     status === "CANCELLED" ||
     status === "EXPIRED" ||
@@ -60,6 +51,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const store = await prisma.store.findUnique({ where: { id: shop } });
   if (!store) return new Response(null, { status: 200 });
+
+  // A shop that has held a paid subscription has used its trial — record it
+  // here too, not just in the settings loader, so a merchant who never
+  // reopens Settings still can't collect a second trial.
+  if (plan !== "FREE" && !store.trialUsedAt) {
+    await prisma.store.update({
+      where: { id: shop },
+      data: { trialUsedAt: new Date() },
+    });
+  }
+
   if (store.plan === plan) return new Response(null, { status: 200 });
 
   await prisma.store.update({
