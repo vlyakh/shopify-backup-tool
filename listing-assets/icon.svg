@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1200" viewBox="0 0 1200 1200">
+  <!--
+    App Store icon for "Backup Restore Undo". 1200x1200 as required.
+
+    Deliberately one idea only: a counter-clockwise arrow, the universal
+    "undo / revert" mark. Shopify renders icons as small as ~48px in search
+    results, where anything finer than a single bold shape turns to mush, so
+    there is no text, no layered snapshot motif and no inner detail.
+
+    Palette avoids Shopify's own green so the icon can never read as Shopify
+    branding, which app review rejects.
+  -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#243B6B"/>
+      <stop offset="100%" stop-color="#14203D"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Full-bleed background: Shopify rounds the corners itself -->
+  <rect width="1200" height="1200" fill="url(#bg)"/>
+
+  <!--
+    The arc. Drawn as a dashed circle rather than a path so the gap is exact:
+    circumference = 2*pi*290 = 1822.1; a 74 degree gap is 374.5 of that,
+    leaving 1447.6 of stroke. Rotated -90 so the gap opens at the top, where
+    the arrowhead sits.
+  -->
+  <circle cx="600" cy="600" r="290"
+          fill="none" stroke="#3DDC97" stroke-width="118"
+          stroke-linecap="butt"
+          stroke-dasharray="1447.6 374.5"
+          transform="rotate(-84 600 600)"/>
+
+  <!-- Arrowhead at the head of the arc, pointing counter-clockwise (left) -->
+  <path d="M 470 310 L 640 218 L 640 402 Z" fill="#3DDC97"/>
+</svg>
