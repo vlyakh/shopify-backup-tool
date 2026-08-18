@@ -148,3 +148,65 @@ functional-mismatch complaint waiting to happen:
 - **No reliability or availability promises**, even implied ones.
 - **No disparagement of Shopify's native features** and no scare claims about platform
   behaviour.
+
+
+---
+
+## LISTING FIELDS AS ACTUALLY SUBMITTED
+
+The drafts above were written before Shopify's listing form revealed its real
+constraints. These are the versions that pass its validation — use these.
+
+**App card subtitle**
+Back up your store and undo a single product field, not everything.
+
+**App introduction** (100 chars, must read as two sentences)
+Backs up your products and content. Undo the one field that changed, not the whole store.
+
+**App details** (429 chars — the form REJECTS the word "plan" and any pricing
+reference outside the pricing section)
+Backup Restore Undo keeps manual and scheduled backups of your products, collections, pages, blogs, redirects and navigation menus. If a product is changed by mistake, you can revert the single field that is wrong from the product page, instead of restoring the whole product. It can also record each edit as it happens, so you can see which field changed and what it was before, including changes made by imports and other apps.
+
+**Features** (3-5, no mechanics, no marketing language)
+- Undo a single product field without changing anything else.
+- See which field changed, what it was before, and when it happened.
+- Catch edits made by imports, other apps, and staff.
+- Back up products, collections, pages, blogs, redirects and menus.
+- Recover deleted products, or restore only the ones that changed.
+
+**Search terms** (max 5, each <=20 chars, one idea each, no "Shopify")
+store backup / product backup / undo product edits / restore products / recover deleted
+
+**SEO title** (<=60)
+Backup Restore Undo: store backups with per-field undo
+
+**SEO meta description**
+Back up your products, collections, pages and blogs. When an edit goes wrong, undo the single field that changed instead of restoring your whole store.
+
+**Category**: Store management > Security > Security - Other (Rewind uses the same)
+
+**Install requirements**: Shopify Online Store REQUIRED, POS not required. A single
+failing resource query aborts the whole backup, so a store without the Online
+Store channel could get failing backups.
+
+**Test account**: "My app doesn't require an account to use it" — fully embedded,
+Shopify OAuth only. Supplying Shopify test-store credentials is explicitly forbidden.
+
+**Pricing**: stay on MANUAL pricing. Do not migrate to App Pricing — it would
+discard the hardened Billing API path (trial-once-per-shop, retention grace,
+admin deep-link returnUrl, app_subscriptions/update reconciliation). List three
+public plans only; the two "(14-day trial)" plan names in the billing config are
+implementation detail.
+
+**Alt text** (<=64 chars each)
+- feature media: Undo panel reverting one product field, not the whole store
+- 1 undo: Undo panel showing a price change with an undo button
+- 2 dashboard: Dashboard listing completed backups and a run backup button
+- 3 recover deleted: Recover deleted products panel with a restore button
+- 4 change history: Change history table of product edits and what changed
+- 5 restore changed: Panel listing changed products, each with a revert button
+
+**Screencast** (required, 3-8 min, YouTube Unlisted): install -> Run Backup ->
+edit a product price -> Undo that one field (the core) -> Change History ->
+Restore Changed / Recover Deleted -> Settings showing self-service plan switching
+(review specifically verifies merchants can change plans without contacting support).
