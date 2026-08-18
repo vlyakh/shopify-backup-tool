@@ -277,6 +277,24 @@ type ChangedProduct = {
  *    is fine here — there's no CORS preflight to worry about.
  *  - After a successful revert the row's product drops off, so we re-load the list.
  */
+// Merchant-facing names for the raw webhook field keys, matching the
+// vocabulary the undo modal uses (see SCALAR_LABELS in api.product-history).
+const FIELD_LABELS: Record<string, string> = {
+  title: "title",
+  body_html: "description",
+  vendor: "vendor",
+  product_type: "product type",
+  handle: "handle",
+  tags: "tags",
+  status: "status",
+  template_suffix: "theme template",
+  variants: "variant details",
+  images: "images",
+  options: "options",
+  published_at: "publishing",
+  metafields: "metafields",
+};
+
 function RestoreChanges() {
   const changedFetcher = useFetcher<typeof changedProductsLoader>();
   const hydrated = useHydrated();
@@ -350,9 +368,16 @@ function RestoreChanges() {
     );
   } else {
     const rows = products.map((item) => {
+      // The undo modal already speaks a merchant vocabulary ("Price",
+      // "Description"); this list printed the raw webhook keys, so one price
+      // edit read as "variants" here and "Price" one click away. "variants"
+      // stays deliberately vague — the ledger records that the variant block
+      // changed, not which field inside it, so naming "price" here would be a
+      // guess. The modal diffs the snapshots and can be specific; this cannot.
+      const label = (f: string) => FIELD_LABELS[f] ?? f;
       const changedSummary =
         item.changedFields && item.changedFields.length > 0
-          ? `${item.changedFields.slice(0, 3).join(", ")}${
+          ? `${item.changedFields.slice(0, 3).map(label).join(", ")}${
               item.changedFields.length > 3 ? "…" : ""
             }`
           : "";
