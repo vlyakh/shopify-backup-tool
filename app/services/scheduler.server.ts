@@ -298,6 +298,7 @@ async function purgeUninstalledStores(now: Date): Promise<void> {
         continue;
       }
       await storage.deletePrefix(`${store.id}/`);
+      await prisma.feedback.deleteMany({ where: { storeId: store.id } });
       await prisma.changeLog.deleteMany({ where: { storeId: store.id } });
       await prisma.webhookEvent.deleteMany({ where: { storeId: store.id } });
       await prisma.revertSuppression.deleteMany({

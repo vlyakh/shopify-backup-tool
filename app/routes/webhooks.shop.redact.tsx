@@ -47,6 +47,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   await storage.deletePrefix(`${shop}/`);
 
   // Delete all database records
+  await prisma.feedback.deleteMany({ where: { storeId: shop } });
   await prisma.changeLog.deleteMany({ where: { storeId: shop } });
   await prisma.webhookEvent.deleteMany({ where: { storeId: shop } });
   await prisma.revertSuppression.deleteMany({ where: { storeId: shop } });
