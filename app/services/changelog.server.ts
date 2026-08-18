@@ -166,6 +166,7 @@ export async function recordChange(
           restBaseline,
           data as Record<string, unknown>,
           changedFields,
+          true, // baseline came from a backup
         );
       }
     }
@@ -226,6 +227,15 @@ function categoryKey(c: unknown): string {
  * Variant subfields worth naming, mapped to merchant wording. Mirrors
  * VARIANT_FIELDS in api.product-history.tsx, which the undo popup uses.
  */
+/** Variant subfields a backup actually stores — the only ones safe to diff
+ *  against a backup-derived baseline. Mirrors firstEventChangedFields. */
+const BACKED_UP_VARIANT_FIELDS = new Set([
+  "price",
+  "compare_at_price",
+  "barcode",
+  "sku",
+]);
+
 const VARIANT_SUBFIELDS: Array<[string, string]> = [
   ["price", "price"],
   ["compare_at_price", "compare-at price"],
@@ -257,6 +267,13 @@ function computeDisplayFields(
   before: Record<string, unknown>,
   after: Record<string, unknown>,
   changedFields: string[],
+  // True when `before` was rebuilt from a BACKUP rather than a previous
+  // webhook. Backups do not capture taxable, inventory policy, weight and
+  // friends, so those arrive as null and would diff against the webhook's real
+  // values — reporting fields the merchant never touched on their first edit
+  // after a backup. firstEventChangedFields guards this by only comparing the
+  // subfields backups actually store; do the same here.
+  baselineFromBackup = false,
 ): string[] {
   const out: string[] = [];
 
@@ -279,7 +296,10 @@ function computeDisplayFields(
         subs.add("variant added");
         continue;
       }
-      for (const [key, label] of VARIANT_SUBFIELDS) {
+      const comparable = baselineFromBackup
+        ? VARIANT_SUBFIELDS.filter(([key]) => BACKED_UP_VARIANT_FIELDS.has(key))
+        : VARIANT_SUBFIELDS;
+      for (const [key, label] of comparable) {
         if (JSON.stringify(prev[key]) !== JSON.stringify(v[key])) subs.add(label);
       }
     }
