@@ -20,6 +20,35 @@ import prisma from "../db.server";
 
 const PAGE_SIZE = 50;
 
+// Webhook payload keys that always ride along with a real edit. They are
+// bookkeeping, not something the merchant changed, and showing them made the
+// history read as debug output.
+const NOISE_FIELDS = new Set([
+  "updated_at",
+  "variant_gids",
+  "variant_ids",
+  "admin_graphql_api_id",
+  "published_scope",
+  "image",
+]);
+
+// Merchant-facing names, matching the undo modal's vocabulary.
+const FIELD_LABELS: Record<string, string> = {
+  title: "title",
+  body_html: "description",
+  vendor: "vendor",
+  product_type: "product type",
+  handle: "handle",
+  tags: "tags",
+  status: "status",
+  template_suffix: "theme template",
+  variants: "variant details",
+  images: "images",
+  options: "options",
+  published_at: "publishing",
+  metafields: "metafields",
+};
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shop = session.shop;
@@ -55,6 +84,26 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       })
     : [];
 
+  // Resolve human titles. The ledger only stores the resource id, so the page
+  // showed "Product/15462062522479" — the merchant has no idea which product
+  // that is, which makes the most important column of the table useless. The
+  // backup items carry the title, so look them up in one query for the page.
+  const titles = new Map<string, string>();
+  if (changes.length > 0) {
+    const items = await prisma.backupItem.findMany({
+      where: {
+        resourceId: { in: [...new Set(changes.map((c) => c.resourceId))] },
+        backup: { storeId: shop },
+      },
+      select: { resourceId: true, title: true, backup: { select: { createdAt: true } } },
+      orderBy: { backup: { createdAt: "desc" } },
+    });
+    // findMany returns newest first, so the first title wins per resource.
+    for (const it of items) {
+      if (it.title && !titles.has(it.resourceId)) titles.set(it.resourceId, it.title);
+    }
+  }
+
   return json({
     isPremium,
     page,
@@ -64,9 +113,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       id: c.id,
       resourceType: c.resourceType,
       resourceId: c.resourceId,
+      title: titles.get(c.resourceId) ?? null,
       action: c.action,
       changedAt: c.changedAt.toISOString(),
-      changedFields: c.changedFields,
+      // Internal webhook bookkeeping keys are not changes a merchant made.
+      changedFields: c.changedFields.filter((f) => !NOISE_FIELDS.has(f)),
     })),
   });
 };
@@ -136,9 +187,12 @@ export default function Changes() {
     formatDate(change.changedAt, hydrated),
     <ActionBadge key={change.id} action={change.action} />,
     <Badge key={`type-${change.id}`}>{change.resourceType}</Badge>,
-    change.resourceId.replace("gid://shopify/", ""),
+    change.title ?? change.resourceId.replace("gid://shopify/", ""),
     change.changedFields.length > 0
-      ? change.changedFields.slice(0, 3).join(", ") +
+      ? change.changedFields
+          .slice(0, 3)
+          .map((f) => FIELD_LABELS[f] ?? f)
+          .join(", ") +
         (change.changedFields.length > 3 ? ` +${change.changedFields.length - 3} more` : "")
       : "-",
   ]);
