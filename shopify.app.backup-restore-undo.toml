@@ -3,10 +3,14 @@
 # prod at a new host would break dev.
 #
 # Deploy with: shopify app deploy --config backup-restore-undo --allow-updates
+#
+# The hostname deliberately contains no "shopify": App Store review rejects
+# app URLs with Shopify's trademark in the domain, which is why this moved off
+# shopify-backup.azurewebsites.net before any merchant had installed.
 
 name = "Backup Restore Undo"
 client_id = "0e34782caa0161236bd53d796be4df30"
-application_url = "https://shopify-backup.azurewebsites.net"
+application_url = "https://backup-restore-undo.azurewebsites.net"
 embedded = true
 
 [access_scopes]
@@ -20,9 +24,9 @@ use_legacy_install_flow = false
 
 [auth]
 redirect_urls = [
-  "https://shopify-backup.azurewebsites.net/auth/callback",
-  "https://shopify-backup.azurewebsites.net/auth/shopify/callback",
-  "https://shopify-backup.azurewebsites.net/api/auth/callback",
+  "https://backup-restore-undo.azurewebsites.net/auth/callback",
+  "https://backup-restore-undo.azurewebsites.net/auth/shopify/callback",
+  "https://backup-restore-undo.azurewebsites.net/api/auth/callback",
 ]
 
 [webhooks]

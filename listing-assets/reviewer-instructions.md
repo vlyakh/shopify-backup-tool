@@ -74,7 +74,7 @@ downgrading warns before it takes effect.
   compares against. The demo store already has one.
 - The Undo and Backup Status blocks are admin UI extensions on the product
   page. They are already enabled on the demo store.
-- Privacy policy: https://shopify-backup.azurewebsites.net/privacy
+- Privacy policy: https://backup-restore-undo.azurewebsites.net/privacy
 
 ## Contact
 

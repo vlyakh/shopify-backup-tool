@@ -13,7 +13,7 @@ form below is the source to cut from.
 
 ## Privacy policy URL (required by App Store review)
 
-https://shopify-backup.azurewebsites.net/privacy
+https://backup-restore-undo.azurewebsites.net/privacy
 
 Served by the app itself as a public, unauthenticated route — no external
 hosting needed, and it cannot drift out of sync with a separately hosted copy.
