@@ -760,6 +760,19 @@ export default function Index() {
                 <Text as="p" variant="bodySm" tone="subdued">
                   {store?.retentionDays}-day retention
                 </Text>
+                {/* During the post-downgrade grace period the plan and the
+                    retention disagree — "Free" next to "90-day retention"
+                    reads as a bug unless the deadline is stated. Say when it
+                    changes, so the merchant can act while it still matters. */}
+                {store?.pendingRetentionDays != null &&
+                  store?.pendingRetentionAt != null && (
+                    <Text as="p" variant="bodySm" tone="caution">
+                      Drops to {store.pendingRetentionDays}-day retention on{" "}
+                      {new Date(store.pendingRetentionAt)
+                        .toISOString()
+                        .slice(0, 10)}
+                    </Text>
+                  )}
               </BlockStack>
             </Card>
           </Layout.Section>
