@@ -200,6 +200,20 @@ export async function recordChange(
 /**
  * Shallow comparison of two objects to find changed top-level fields.
  */
+/**
+ * Taxonomy id for comparison. Shopify writes a placeholder category
+ * (".../TaxonomyCategory/na", name "Uncategorized") where the merchant has set
+ * none, so a product saved with no category flips null -> Uncategorized. Both
+ * mean "no category"; comparing them raw reports a change the merchant never
+ * made. firstEventChangedFields already normalises this — computeChangedFields,
+ * which runs for every edit after the first, did not.
+ */
+function categoryKey(c: unknown): string {
+  const id = (c as { admin_graphql_api_id?: string } | null)
+    ?.admin_graphql_api_id;
+  return !id || id.endsWith("/na") ? "" : id;
+}
+
 function computeChangedFields(
   before: Record<string, unknown>,
   after: Record<string, unknown>,
@@ -212,6 +226,11 @@ function computeChangedFields(
     const fullKey = prefix ? `${prefix}.${key}` : key;
     const beforeVal = before[key];
     const afterVal = after[key];
+
+    if (!prefix && key === "category") {
+      if (categoryKey(beforeVal) !== categoryKey(afterVal)) result.push(fullKey);
+      continue;
+    }
 
     if (JSON.stringify(beforeVal) !== JSON.stringify(afterVal)) {
       result.push(fullKey);
