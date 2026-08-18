@@ -89,8 +89,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       title: titles.get(c.resourceId) ?? null,
       action: c.action,
       changedAt: c.changedAt.toISOString(),
-      // Internal webhook bookkeeping keys are not changes a merchant made.
-      changedFields: c.changedFields.filter((f) => !NOISE_KEYS.has(f)),
+      // displayFields is resolved at write time and already merchant-worded
+      // ("price", not "variants"). Older rows predate it — fall back to the
+      // raw keys, filtered and mapped as before.
+      changedFields:
+        c.displayFields.length > 0
+          ? c.displayFields
+          : c.changedFields.filter((f) => !NOISE_KEYS.has(f)),
     })),
   });
 };

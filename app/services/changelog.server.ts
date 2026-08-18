@@ -1,7 +1,7 @@
 import prisma from "../db.server";
 import { storage } from "./storage.server";
 import type { ResourceType, ChangeAction, Plan } from "@prisma/client";
-import { isNoiseOnly } from "./noise-fields";
+import { isNoiseOnly, NOISE_KEYS, FIELD_LABELS } from "./noise-fields";
 
 /**
  * Whether a store is entitled to the webhook-driven change ledger.
@@ -91,6 +91,7 @@ export async function recordChange(
   // Find the previous state (from last backup or last change)
   let beforePath: string | null = null;
   const changedFields: string[] = [];
+  let displayFields: string[] = [];
 
   if (action === "UPDATED") {
     const lastChange = await findLastFullSnapshot(
@@ -108,6 +109,7 @@ export async function recordChange(
         const before = JSON.parse(beforeData);
         const after = data as Record<string, unknown>;
         computeChangedFields(before, after, "", changedFields);
+        displayFields = computeDisplayFields(before, after, changedFields);
       }
     } else if (resourceType === "PRODUCT") {
       // First-ever tracked edit of this product: no prior snapshot to chain from,
@@ -160,6 +162,11 @@ export async function recordChange(
             data as Record<string, unknown>,
           ),
         );
+        displayFields = computeDisplayFields(
+          restBaseline,
+          data as Record<string, unknown>,
+          changedFields,
+        );
       }
     }
   }
@@ -190,6 +197,7 @@ export async function recordChange(
       beforePath,
       afterPath,
       changedFields,
+      displayFields,
       hidden,
       webhookEventId: webhookEventId ?? null,
     },
@@ -212,6 +220,77 @@ function categoryKey(c: unknown): string {
   const id = (c as { admin_graphql_api_id?: string } | null)
     ?.admin_graphql_api_id;
   return !id || id.endsWith("/na") ? "" : id;
+}
+
+/**
+ * Variant subfields worth naming, mapped to merchant wording. Mirrors
+ * VARIANT_FIELDS in api.product-history.tsx, which the undo popup uses.
+ */
+const VARIANT_SUBFIELDS: Array<[string, string]> = [
+  ["price", "price"],
+  ["compare_at_price", "compare-at price"],
+  ["sku", "SKU"],
+  ["barcode", "barcode"],
+  ["weight", "weight"],
+  ["taxable", "tax setting"],
+  ["inventory_policy", "inventory policy"],
+  ["inventory_management", "inventory tracking"],
+  ["harmonized_system_code", "HS code"],
+  ["country_code_of_origin", "country of origin"],
+];
+
+/**
+ * Merchant-facing names for what actually changed, resolved by diffing the
+ * snapshots we already hold.
+ *
+ * Shopify reports a price edit as the whole `variants` array, so the history
+ * said "variant details" for what the merchant experienced as "I changed the
+ * price". The undo popup gets this right because it diffs the snapshots; this
+ * does the same work once, at write time, so every list can be specific
+ * without re-reading blobs per row.
+ *
+ * Stored separately from changedFields — that array is matched against
+ * undoneFields to decide whether a change is still outstanding, and adding
+ * granular tokens to it would change that logic by accident.
+ */
+function computeDisplayFields(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+  changedFields: string[],
+): string[] {
+  const out: string[] = [];
+
+  for (const f of changedFields) {
+    if (NOISE_KEYS.has(f)) continue;
+    if (f === "variants") continue; // resolved to subfields below
+    out.push(FIELD_LABELS[f] ?? f);
+  }
+
+  if (changedFields.includes("variants")) {
+    const bv = (before.variants as Array<Record<string, unknown>>) ?? [];
+    const av = (after.variants as Array<Record<string, unknown>>) ?? [];
+    const byId = new Map(
+      bv.map((v) => [String(v.admin_graphql_api_id ?? v.id ?? ""), v]),
+    );
+    const subs = new Set<string>();
+    for (const v of av) {
+      const prev = byId.get(String(v.admin_graphql_api_id ?? v.id ?? ""));
+      if (!prev) {
+        subs.add("variant added");
+        continue;
+      }
+      for (const [key, label] of VARIANT_SUBFIELDS) {
+        if (JSON.stringify(prev[key]) !== JSON.stringify(v[key])) subs.add(label);
+      }
+    }
+    if (av.length < bv.length) subs.add("variant removed");
+    // Nothing nameable changed inside the variants (an id or an untracked
+    // subfield moved) — say something true rather than nothing.
+    if (subs.size === 0) subs.add("variant details");
+    for (const s of subs) out.push(s);
+  }
+
+  return [...new Set(out)];
 }
 
 function computeChangedFields(

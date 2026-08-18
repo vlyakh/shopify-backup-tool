@@ -160,6 +160,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           resourceId: true,
           changedAt: true,
           changedFields: true,
+          displayFields: true,
           undoneFields: true,
         },
       });
@@ -177,7 +178,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             // send merchant wording rather than raw webhook keys — the
             // extension renders this string verbatim, so "variants" would show
             // there while the dashboard said "variant details".
-            changedFields: visibleFieldLabels(entry.changedFields),
+            changedFields:
+              entry.displayFields.length > 0
+                ? entry.displayFields
+                : visibleFieldLabels(entry.changedFields),
             changeCount: 1,
           });
         }

@@ -193,6 +193,15 @@ model ChangeLog {
   // Summary of what changed
   changedFields String[] // e.g. ["title", "price", "variants[0].price"]
 
+  // Merchant-facing names for the same edit, resolved at write time by diffing
+  // the snapshots (e.g. ["price"] where changedFields says ["variants"]).
+  // Kept SEPARATE from changedFields on purpose: changedFields is matched
+  // against undoneFields to decide whether a change is still outstanding, so
+  // adding granular tokens there would silently change that logic. Display
+  // reads this and falls back to changedFields when empty (rows written before
+  // this existed).
+  displayFields String[] @default([])
+
   // Revert-generated event (our own write's webhook echo, or an event undone by
   // "Revert all to backup"). Recorded so the diff baseline advances, but hidden
   // from the merchant-facing history.
