@@ -16,7 +16,7 @@ export const meta: MetaFunction = () => [
 ];
 
 const UPDATED = "18 August 2026";
-const CONTACT = "shopifybackupapp@gmail.com";
+const CONTACT = "support.appforge@gmail.com";
 
 export default function Privacy() {
   return (
