@@ -17,37 +17,10 @@ import {
 import { TitleBar } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
+import { NOISE_KEYS, FIELD_LABELS } from "../services/noise-fields";
 
 const PAGE_SIZE = 50;
 
-// Webhook payload keys that always ride along with a real edit. They are
-// bookkeeping, not something the merchant changed, and showing them made the
-// history read as debug output.
-const NOISE_FIELDS = new Set([
-  "updated_at",
-  "variant_gids",
-  "variant_ids",
-  "admin_graphql_api_id",
-  "published_scope",
-  "image",
-]);
-
-// Merchant-facing names, matching the undo modal's vocabulary.
-const FIELD_LABELS: Record<string, string> = {
-  title: "title",
-  body_html: "description",
-  vendor: "vendor",
-  product_type: "product type",
-  handle: "handle",
-  tags: "tags",
-  status: "status",
-  template_suffix: "theme template",
-  variants: "variant details",
-  images: "images",
-  options: "options",
-  published_at: "publishing",
-  metafields: "metafields",
-};
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -117,7 +90,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       action: c.action,
       changedAt: c.changedAt.toISOString(),
       // Internal webhook bookkeeping keys are not changes a merchant made.
-      changedFields: c.changedFields.filter((f) => !NOISE_FIELDS.has(f)),
+      changedFields: c.changedFields.filter((f) => !NOISE_KEYS.has(f)),
     })),
   });
 };

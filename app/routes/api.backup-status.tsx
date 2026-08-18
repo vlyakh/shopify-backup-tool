@@ -2,6 +2,7 @@ import type { LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
+import { NOISE_KEYS } from "../services/noise-fields";
 
 /**
  * API endpoint for the Backup Status admin block extension.
@@ -12,17 +13,6 @@ import prisma from "../db.server";
 
 // REST webhook payload keys that bump on essentially every update and aren't
 // user-facing changes. Mirrors NOISE_KEYS in api.product-history.tsx.
-const NOISE_KEYS = new Set([
-  "id",
-  "admin_graphql_api_id",
-  "created_at",
-  "updated_at",
-  "published_scope",
-  "variant_ids",
-  "variant_gids",
-  "image",
-  "image_id",
-]);
 
 /**
  * Does this event still carry a visible change the merchant hasn't undone via

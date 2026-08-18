@@ -30,6 +30,7 @@ import { TitleBar } from "@shopify/app-bridge-react";
 import type { BackupInterval } from "@prisma/client";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
+import { FIELD_LABELS } from "../services/noise-fields";
 import { startBackupIfIdle } from "../services/backup.server";
 import { computeNextRunAt } from "../services/scheduler.server";
 import type { loader as changedProductsLoader } from "./api.changed-products";
@@ -277,23 +278,6 @@ type ChangedProduct = {
  *    is fine here — there's no CORS preflight to worry about.
  *  - After a successful revert the row's product drops off, so we re-load the list.
  */
-// Merchant-facing names for the raw webhook field keys, matching the
-// vocabulary the undo modal uses (see SCALAR_LABELS in api.product-history).
-const FIELD_LABELS: Record<string, string> = {
-  title: "title",
-  body_html: "description",
-  vendor: "vendor",
-  product_type: "product type",
-  handle: "handle",
-  tags: "tags",
-  status: "status",
-  template_suffix: "theme template",
-  variants: "variant details",
-  images: "images",
-  options: "options",
-  published_at: "publishing",
-  metafields: "metafields",
-};
 
 function RestoreChanges() {
   const changedFetcher = useFetcher<typeof changedProductsLoader>();

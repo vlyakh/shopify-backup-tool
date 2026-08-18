@@ -1,6 +1,7 @@
 import prisma from "../db.server";
 import { storage } from "./storage.server";
 import type { ResourceType, ChangeAction, Plan } from "@prisma/client";
+import { isNoiseOnly } from "./noise-fields";
 
 /**
  * Whether a store is entitled to the webhook-driven change ledger.
@@ -161,6 +162,23 @@ export async function recordChange(
         );
       }
     }
+  }
+
+  // Nothing the merchant would recognise as an edit — only bookkeeping keys
+  // moved (updated_at always does). Recording it would put a product nobody
+  // touched into "Restore changes" and burn a row plus a blob every time
+  // Shopify re-emits a product. The after-blob is written above, before the
+  // diff exists, so drop it too rather than orphan it.
+  //
+  // Only when a diff WAS computed: an empty changedFields means no baseline
+  // was available, which the consumers read as "assume it changed".
+  if (action === "UPDATED" && isNoiseOnly(changedFields)) {
+    try {
+      await storage.delete(afterPath);
+    } catch {
+      // Best effort: a stranded blob is harmless, a thrown webhook is not.
+    }
+    return null;
   }
 
   const created = await prisma.changeLog.create({

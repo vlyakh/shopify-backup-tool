@@ -2,6 +2,7 @@ import type { LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
+import { NOISE_KEYS } from "../services/noise-fields";
 import { storage } from "../services/storage.server";
 import {
   graphqlBackupToRest,
@@ -25,18 +26,6 @@ import {
  */
 
 // Top-level REST keys that bump on edits but aren't user-facing changes.
-const NOISE_KEYS = new Set([
-  "id",
-  "admin_graphql_api_id",
-  "created_at",
-  "updated_at",
-  // published_at is handled (Online Store publish/unpublish), not noise.
-  "published_scope",
-  "variant_ids",
-  "variant_gids",
-  "image",
-  "image_id",
-]);
 
 const SCALAR_LABELS: Record<string, string> = {
   title: "Title",
