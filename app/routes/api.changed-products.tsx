@@ -2,7 +2,7 @@ import type { LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
-import { NOISE_KEYS } from "../services/noise-fields";
+import { NOISE_KEYS, visibleFieldLabels } from "../services/noise-fields";
 import { graphqlWithRetry } from "../services/backup.server";
 import { isChangeTrackingEntitled } from "../services/changelog.server";
 
@@ -173,8 +173,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           byProduct.set(entry.resourceId, {
             changedAt: entry.changedAt,
             // Surface only user-facing fields (updated_at & co. are noise that
-            // would displace the real fields in the extension's 3 slots).
-            changedFields: entry.changedFields.filter((f) => !NOISE_KEYS.has(f)),
+            // would displace the real fields in the extension's 3 slots), and
+            // send merchant wording rather than raw webhook keys — the
+            // extension renders this string verbatim, so "variants" would show
+            // there while the dashboard said "variant details".
+            changedFields: visibleFieldLabels(entry.changedFields),
             changeCount: 1,
           });
         }
