@@ -487,13 +487,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           const b = count(before?.[field]);
           const a = count(after[field]);
           if (b === a) continue; // count unchanged → noise (the real change shows elsewhere)
+          // Singularise: "1 images" is the kind of wrong that a merchant reads
+          // as sloppiness in the one screen meant to reassure them.
+          const noun = (n: number) =>
+            n === 1 ? field.replace(/s$/, "") : field;
           rows.push({
             changeId: event.id,
             changedAt,
             field,
             label: field === "images" ? "Images" : "Options",
-            before: `${b} ${field}`,
-            after: `${a} ${field}`,
+            before: `${b} ${noun(b)}`,
+            after: `${a} ${noun(a)}`,
             revertable: false,
           });
         }
