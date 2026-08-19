@@ -20,7 +20,7 @@ must already be true on the demo store before you submit.
 
 ## What the app does
 
-Backup Restore Undo backs up store content (products, collections, pages,
+Reverta backs up store content (products, collections, pages,
 blogs, redirects, menus) and lets a merchant restore it. Its distinguishing
 feature is reverting a **single product field** from the product page, rather
 than restoring a whole backup.
@@ -31,7 +31,7 @@ themes, files or inventory quantities.
 ## Test steps
 
 **1. See the existing backups**
-Apps → Backup Restore Undo. The dashboard lists completed backups. Click one to
+Apps → Reverta. The dashboard lists completed backups. Click one to
 see the items it captured.
 
 **2. Run a backup**
@@ -60,7 +60,7 @@ Products list → the "..." / bulk actions menu offers:
 - **Restore Changed Products** — restores products that changed since the backup
 
 **8. Billing**
-Apps → Backup Restore Undo → Settings shows the three plans and allows
+Apps → Reverta → Settings shows the three plans and allows
 switching between them without contacting support or reinstalling. Free,
 Standard ($9/month) and Premium ($19/month) are all self-service, and
 downgrading warns before it takes effect.
@@ -74,7 +74,7 @@ downgrading warns before it takes effect.
   compares against. The demo store already has one.
 - The Undo and Backup Status blocks are admin UI extensions on the product
   page. They are already enabled on the demo store.
-- Privacy policy: https://backup-restore-undo.azurewebsites.net/privacy
+- Privacy policy: https://reverta.azurewebsites.net/privacy
 
 ## Contact
 

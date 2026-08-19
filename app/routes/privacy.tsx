@@ -11,7 +11,7 @@ import type { MetaFunction } from "@remix-run/node";
 // mandatory webhooks.
 
 export const meta: MetaFunction = () => [
-  { title: "Privacy Policy — Backup Restore Undo" },
+  { title: "Privacy Policy — Reverta" },
   { name: "robots", content: "index" },
 ];
 
@@ -31,11 +31,11 @@ export default function Privacy() {
     >
       <h1 style={{ fontSize: "2rem", marginBottom: ".25rem" }}>Privacy Policy</h1>
       <p style={{ color: "#5c6070", marginTop: 0 }}>
-        Backup Restore Undo · Last updated {UPDATED}
+        Reverta · Last updated {UPDATED}
       </p>
 
       <p>
-        Backup Restore Undo (&ldquo;the app&rdquo;) backs up store content and
+        Reverta (&ldquo;the app&rdquo;) backs up store content and
         lets merchants restore or undo changes to it. This policy describes
         what the app stores, why, where it is held, and how long it is kept.
       </p>

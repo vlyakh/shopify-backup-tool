@@ -8,9 +8,9 @@
 # app URLs with Shopify's trademark in the domain, which is why this moved off
 # shopify-backup.azurewebsites.net before any merchant had installed.
 
-name = "Backup Restore Undo"
+name = "Reverta"
 client_id = "0e34782caa0161236bd53d796be4df30"
-application_url = "https://backup-restore-undo.azurewebsites.net"
+application_url = "https://reverta.azurewebsites.net"
 embedded = true
 
 [access_scopes]
@@ -24,9 +24,9 @@ use_legacy_install_flow = false
 
 [auth]
 redirect_urls = [
-  "https://backup-restore-undo.azurewebsites.net/auth/callback",
-  "https://backup-restore-undo.azurewebsites.net/auth/shopify/callback",
-  "https://backup-restore-undo.azurewebsites.net/api/auth/callback",
+  "https://reverta.azurewebsites.net/auth/callback",
+  "https://reverta.azurewebsites.net/auth/shopify/callback",
+  "https://reverta.azurewebsites.net/api/auth/callback",
 ]
 
 [webhooks]

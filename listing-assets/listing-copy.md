@@ -1,4 +1,4 @@
-# App Store listing copy — Backup Restore Undo
+# App Store listing copy — Reverta
 
 Drafted against three competing positioning angles, scored by an adversarial
 judge, then corrected for every overclaim it found. The winning angle is
@@ -13,7 +13,7 @@ form below is the source to cut from.
 
 ## Privacy policy URL (required by App Store review)
 
-https://backup-restore-undo.azurewebsites.net/privacy
+https://reverta.azurewebsites.net/privacy
 
 Served by the app itself as a public, unauthenticated route — no external
 hosting needed, and it cannot drift out of sync with a separately hosted copy.
@@ -23,7 +23,7 @@ hosting needed, and it cannot drift out of sync with a separately hosted copy.
 ## Listing fields (paste these)
 
 **App name** (30 char limit)
-Backup Restore Undo
+Reverta — Backup & Undo
 
 **Tagline / subtitle** (62 char limit)
 Undo one product field. Don't rewind your whole store.
@@ -65,7 +65,7 @@ backup and restore, undo product edits, product change history, revert price cha
 
 The price is off by a decimal. The title has someone else's wording in it. Three variants lost their weights. You did not do it.
 
-You already know which field is wrong, so fix that one field. Backup Restore Undo reverts the single field you point at — the fields you do not select are never written — from the product page where you noticed the problem. Underneath it runs manual and scheduled backups of products, collections, pages, blogs, redirects and menus.
+You already know which field is wrong, so fix that one field. Reverta reverts the single field you point at — the fields you do not select are never written — from the product page where you noticed the problem. Underneath it runs manual and scheduled backups of products, collections, pages, blogs, redirects and menus.
 
 SEE WHAT CHANGED (PREMIUM)
 
@@ -165,7 +165,7 @@ Backs up your products and content. Undo the one field that changed, not the who
 
 **App details** (429 chars — the form REJECTS the word "plan" and any pricing
 reference outside the pricing section)
-Backup Restore Undo keeps manual and scheduled backups of your products, collections, pages, blogs, redirects and navigation menus. If a product is changed by mistake, you can revert the single field that is wrong from the product page, instead of restoring the whole product. It can also record each edit as it happens, so you can see which field changed and what it was before, including changes made by imports and other apps.
+Reverta keeps manual and scheduled backups of your products, collections, pages, blogs, redirects and navigation menus. If a product is changed by mistake, you can revert the single field that is wrong from the product page, instead of restoring the whole product. It can also record each edit as it happens, so you can see which field changed and what it was before, including changes made by imports and other apps.
 
 **Features** (3-5, no mechanics, no marketing language)
 - Undo a single product field without changing anything else.
@@ -178,7 +178,7 @@ Backup Restore Undo keeps manual and scheduled backups of your products, collect
 store backup / product backup / undo product edits / restore products / recover deleted
 
 **SEO title** (<=60)
-Backup Restore Undo: store backups with per-field undo
+Reverta: store backups with per-field undo
 
 **SEO meta description**
 Back up your products, collections, pages and blogs. When an edit goes wrong, undo the single field that changed instead of restoring your whole store.
