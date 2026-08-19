@@ -114,10 +114,26 @@ function useHydrated(): boolean {
 
 function formatDate(isoString: string, hydrated: boolean): string {
   const date = new Date(isoString);
+  // Server renders in UTC, the browser in the merchant's zone, so a locale
+  // string during SSR would mismatch on hydration. Deterministic until mount.
   if (!hydrated) {
     const iso = date.toISOString();
     return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
   }
+
+  // "2 hours ago" answers the question a merchant is actually asking — is this
+  // the edit I just made, or something from last week? An absolute timestamp
+  // makes them do that arithmetic themselves. Older entries fall back to a
+  // date, where "31 days ago" stops being useful.
+  const secs = Math.round((Date.now() - date.getTime()) / 1000);
+  if (secs < 60) return "just now";
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `${mins} minute${mins === 1 ? "" : "s"} ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days} day${days === 1 ? "" : "s"} ago`;
+
   return date.toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",

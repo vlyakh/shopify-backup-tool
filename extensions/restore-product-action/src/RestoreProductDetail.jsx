@@ -2,8 +2,20 @@
 import { render } from "preact";
 import { useEffect, useState } from "preact/hooks";
 
+// "2 hours ago" is what a merchant is actually asking: is this the edit I just
+// made, or something older? Beyond a month the relative form stops helping, so
+// it falls back to a date.
 function formatDate(s) {
-  return new Date(s).toLocaleDateString("en-US", {
+  const date = new Date(s);
+  const secs = Math.round((Date.now() - date.getTime()) / 1000);
+  if (secs < 60) return "just now";
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `${mins} minute${mins === 1 ? "" : "s"} ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days} day${days === 1 ? "" : "s"} ago`;
+  return date.toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
     hour: "2-digit",
