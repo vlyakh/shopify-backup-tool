@@ -276,3 +276,29 @@ enum WebhookStatus {
   FAILED    // DLQ — moved here after max retries
   SKIPPED   // Inventory-only change, not worth recording
 }
+
+/// Merchant-submitted feedback from inside the app.
+///
+/// Free text, so it can contain anything the merchant types — including
+/// personal data they volunteer. That is why the privacy policy names it
+/// explicitly; storing something the policy does not mention would make the
+/// policy wrong, which review reads alongside the compliance webhooks.
+/// Deleted with the rest of a shop's data on shop/redact and on the fallback
+/// uninstall purge.
+model Feedback {
+  id        String       @id @default(cuid())
+  storeId   String
+  kind      FeedbackKind @default(OTHER)
+  message   String
+  /// Optional reply address. Null when the merchant did not ask for a reply.
+  email     String?
+  createdAt DateTime     @default(now())
+
+  @@index([storeId, createdAt])
+}
+
+enum FeedbackKind {
+  PROBLEM
+  REQUEST
+  OTHER
+}

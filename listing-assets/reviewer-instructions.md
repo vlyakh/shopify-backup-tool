@@ -78,7 +78,7 @@ downgrading warns before it takes effect.
 
 ## Contact
 
-[support email] — [emergency developer contact]
+support.appforge@gmail.com — [emergency developer phone]
 
 ---
 
