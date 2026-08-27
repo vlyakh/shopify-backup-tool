@@ -131,6 +131,99 @@ type BackupImage = {
   height?: number | null;
 };
 
+const IMAGE_PROBE_TIMEOUT_MS = 5_000;
+
+/**
+ * Whether an image URL still resolves. Backups keep only the Shopify CDN url
+ * of each image, and Shopify deletes media that was used by a deleted product
+ * alone — so by the time a merchant recovers that product, its image sources
+ * may be gone. Handing a dead url to Shopify makes the media ingest FAILED and
+ * the product shows "Media processing failed" in the admin. Probe first.
+ * Network errors / timeouts count as unreachable — better a recovered product
+ * with no image than one carrying a broken one.
+ */
+async function isImageReachable(url: string): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), IMAGE_PROBE_TIMEOUT_MS);
+  try {
+    let res = await fetch(url, { method: "HEAD", signal: controller.signal, redirect: "follow" });
+    if (res.status === 405 || res.status === 403) {
+      // Some CDNs refuse HEAD; a 1-byte ranged GET answers the same question.
+      res = await fetch(url, {
+        method: "GET",
+        headers: { Range: "bytes=0-0" },
+        signal: controller.signal,
+        redirect: "follow",
+      });
+    }
+    return res.ok || res.status === 206;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Keep only the backed-up images whose url still resolves (see
+ * isImageReachable). Order is preserved. Never throws.
+ */
+export async function filterReachableImages<T extends { url?: string }>(
+  images: T[],
+): Promise<{ reachable: T[]; skipped: number }> {
+  const checks = await Promise.all(
+    images.map(async (img) => (img.url ? await isImageReachable(img.url) : false)),
+  );
+  const reachable = images.filter((_, i) => checks[i]);
+  return { reachable, skipped: images.length - reachable.length };
+}
+
+// A freshly created product with a handful of images normally ingests within
+// seconds; this only bounds how long a recover waits to clean up stragglers.
+const FAILED_MEDIA_CLEANUP_TIMEOUT_MS = 30_000;
+
+/**
+ * After a create that attached media by url, wait (bounded) for ingestion to
+ * settle and delete any media that ended up FAILED, so the product never sits
+ * in the admin with a "Media processing failed" banner. Media still
+ * PROCESSING at the deadline is left alone — it is almost always fine.
+ * Returns the number of media removed. Best-effort, never throws.
+ */
+export async function removeFailedMedia(
+  admin: AdminApiContext,
+  productId: string,
+): Promise<number> {
+  try {
+    const deadline = Date.now() + FAILED_MEDIA_CLEANUP_TIMEOUT_MS;
+    for (;;) {
+      const result = await (
+        await admin.graphql(PRODUCT_MEDIA_STATUS_QUERY, {
+          variables: { id: productId },
+        })
+      ).json();
+      const nodes = (result.data?.product?.media?.nodes ?? []) as Array<{
+        id: string;
+        status?: string;
+      }>;
+      const failed = nodes.filter((n) => n.status === "FAILED").map((n) => n.id);
+      const settling = nodes.some((n) => n.status !== "READY" && n.status !== "FAILED");
+      if (!settling || Date.now() >= deadline) {
+        if (failed.length === 0) return 0;
+        await admin.graphql(PRODUCT_DELETE_MEDIA_MUTATION, {
+          variables: { productId, mediaIds: failed },
+        });
+        return failed.length;
+      }
+      await new Promise((resolve) => setTimeout(resolve, MEDIA_POLL_INTERVAL_MS));
+    }
+  } catch (error) {
+    console.warn(
+      `[Restore] Failed-media cleanup skipped for ${productId}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return 0;
+  }
+}
+
 /**
  * Best-effort reconcile of a product's images to a backup set. Create-first,
  * wait for the new media to finish ingesting (READY), then delete-old (never

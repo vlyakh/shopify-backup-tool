@@ -1,6 +1,7 @@
 import type { AdminApiContext } from "@shopify/shopify-app-remix/server";
 import prisma from "../db.server";
 import { storage } from "./storage.server";
+import { filterReachableImages, removeFailedMedia } from "./product-revert.server";
 import { apiVersion } from "../shopify.server";
 import type { ResourceType } from "@prisma/client";
 
@@ -315,14 +316,25 @@ async function restoreProduct(
       });
     }
 
-    // Images as files
+    // Images as files. The backup holds only CDN urls, and Shopify deletes a
+    // deleted product's media with it — so skip any image whose url no longer
+    // resolves rather than attach one that will ingest as FAILED and leave the
+    // recovered product showing "Media processing failed".
     const images = data.images as { nodes: Array<{ url: string; altText?: string }> } | undefined;
-    const files = images?.nodes?.map((img) => ({
+    const { reachable: liveImages, skipped: skippedImages } = await filterReachableImages(
+      images?.nodes ?? [],
+    );
+    if (skippedImages > 0) {
+      console.warn(
+        `[Restore] ${title}: skipped ${skippedImages} image(s) whose source no longer exists`,
+      );
+    }
+    const files = liveImages.map((img) => ({
       originalSource: img.url,
       alt: img.altText || "",
       contentType: "IMAGE" as const,
     }));
-    if (files?.length) {
+    if (files.length) {
       input.files = files;
     }
 
@@ -362,6 +374,15 @@ async function restoreProduct(
     const newProductId = result?.product?.id;
     if (deferredMetafields?.length && newProductId) {
       await setMetafieldsBestEffort(admin, newProductId, deferredMetafields);
+    }
+    // A url that answered the probe can still fail Shopify's own fetch (e.g.
+    // a CDN purge racing the recover). Drop such media instead of leaving the
+    // product with a failed-media banner.
+    if (files.length && newProductId) {
+      const removed = await removeFailedMedia(admin, newProductId);
+      if (removed > 0) {
+        console.warn(`[Restore] ${title}: removed ${removed} image(s) Shopify could not process`);
+      }
     }
 
     return {
