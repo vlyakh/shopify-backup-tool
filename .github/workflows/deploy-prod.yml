@@ -1,7 +1,8 @@
 name: Deploy to Azure App Service (PROD)
 
-# PROD is promoted manually: run this workflow from the Actions tab.
-# Push-to-main only deploys the dev app (deploy.yml).
+# PROD is promoted manually: run this workflow from the Actions tab or with
+# `gh workflow run deploy-prod.yml --ref main`. Nothing deploys on push —
+# this is the only deployment (the dev environment was retired 2026-08-27).
 on:
   workflow_dispatch:
 

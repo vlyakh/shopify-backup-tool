@@ -1,6 +1,6 @@
-# Production app config. The dev app lives in shopify.app.toml — the two are
-# separate Shopify apps because one app has exactly one App URL, so pointing
-# prod at a new host would break dev.
+# Production app config — the only Shopify app now (the separate dev app and
+# its shopify.app.toml were retired 2026-08-27). Always pass
+# `--config backup-restore-undo` to `shopify app deploy`.
 #
 # Deploy with: shopify app deploy --config backup-restore-undo --allow-updates
 #

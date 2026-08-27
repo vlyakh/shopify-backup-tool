@@ -118,7 +118,7 @@ az webapp config set \
 
 ## 6. Set Up GitHub Actions Deployment
 
-The workflow (`.github/workflows/deploy.yml`) authenticates with the web app's **publish profile** — no service principal or `azure/login` step is involved.
+The workflow (`.github/workflows/deploy-prod.yml`, manual dispatch only) authenticates with the web app's **publish profile** — no service principal or `azure/login` step is involved.
 
 ### Download the Publish Profile
 
