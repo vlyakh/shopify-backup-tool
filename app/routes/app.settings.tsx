@@ -34,7 +34,7 @@ import {
 import prisma from "../db.server";
 import { storage } from "../services/storage.server";
 import { computeNextRunAt } from "../services/scheduler.server";
-import { planTransition, isTestBilling } from "../services/plan.server";
+import { planTransition, isTestBillingFor } from "../services/plan.server";
 
 const PLANS = [
   {
@@ -75,14 +75,15 @@ const PLANS = [
 ];
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session, billing } = await authenticate.admin(request);
+  const { session, billing, admin } = await authenticate.admin(request);
+  const isTest = await isTestBillingFor(admin, session.shop);
 
   // Ask Shopify what the merchant is actually paying for. This is the source
   // of truth - the DB plan is only a cache that we reconcile here (e.g. after
   // the merchant returns from approving a charge, or after a charge lapses).
   const { appSubscriptions } = await billing.check({
     plans: [...ALL_PLANS],
-    isTest: isTestBilling(),
+    isTest,
   });
 
   const activeName = appSubscriptions[0]?.name;
@@ -127,8 +128,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { session, billing } = await authenticate.admin(request);
+  const { session, billing, admin } = await authenticate.admin(request);
   const shop = session.shop;
+  const isTest = await isTestBillingFor(admin, shop);
   const formData = await request.formData();
   const actionType = formData.get("action");
 
@@ -201,12 +203,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       // Downgrade: cancel any active subscription, then drop the cached plan.
       const { appSubscriptions } = await billing.check({
         plans: [...ALL_PLANS],
-        isTest: isTestBilling(),
+        isTest,
       });
       for (const sub of appSubscriptions) {
         await billing.cancel({
           subscriptionId: sub.id,
-          isTest: isTestBilling(),
+          isTest,
           prorate: true,
         });
       }
@@ -248,7 +250,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     return billing.request({
       plan: planName,
-      isTest: isTestBilling(),
+      isTest,
       returnUrl,
     });
   }

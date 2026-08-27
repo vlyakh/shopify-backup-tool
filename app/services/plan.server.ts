@@ -26,6 +26,58 @@ export function isTestBilling(): boolean {
   return process.env.NODE_ENV !== "production";
 }
 
+const SHOP_PLAN_QUERY = `#graphql
+  query ShopPlanForBilling {
+    shop {
+      plan {
+        partnerDevelopment
+      }
+    }
+  }
+`;
+
+// Whether a shop is a Partner development store, remembered per shop so the
+// billing pages don't pay for the query on every load. A store's dev-ness
+// never flips back and forth in practice; the TTL just bounds staleness after
+// a dev store is transferred to a merchant.
+const DEV_STORE_TTL_MS = 6 * 60 * 60 * 1000;
+const devStoreCache = new Map<string, { value: boolean; expiresAt: number }>();
+
+/**
+ * Per-shop test-charge decision.
+ *
+ * The global isTestBilling() override still wins when set. Otherwise, a
+ * Partner DEVELOPMENT store always gets test charges: since 2026-04-28 Shopify
+ * demands a payment method for a real (`test: false`) charge on a dev store —
+ * the "You don't have any payment methods on file" wall — and a dev store can
+ * never be a paying customer anyway. That is what lets the App Store reviewer
+ * (and our own dev store) subscribe to Premium against production without
+ * flipping SHOPIFY_BILLING_TEST for every merchant. Real stores get real
+ * charges. Falls back to the global setting if the shop query fails.
+ */
+export async function isTestBillingFor(
+  admin: { graphql: (query: string) => Promise<Response> },
+  shop: string,
+): Promise<boolean> {
+  const override = process.env.SHOPIFY_BILLING_TEST;
+  if (override === "true" || override === "false") return isTestBilling();
+
+  const cached = devStoreCache.get(shop);
+  if (cached && cached.expiresAt > Date.now()) return cached.value || isTestBilling();
+
+  try {
+    const json = await (await admin.graphql(SHOP_PLAN_QUERY)).json();
+    const isDev = json.data?.shop?.plan?.partnerDevelopment === true;
+    devStoreCache.set(shop, { value: isDev, expiresAt: Date.now() + DEV_STORE_TTL_MS });
+    return isDev || isTestBilling();
+  } catch (error) {
+    console.warn(
+      `[Billing] Could not read shop plan for ${shop}; using global test-billing setting: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return isTestBilling();
+  }
+}
+
 if (
   process.env.SHOPIFY_BILLING_TEST === "true" &&
   process.env.NODE_ENV === "production"
