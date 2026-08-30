@@ -67,10 +67,12 @@ export default function Privacy() {
       <p>
         If you use the in-app feedback form, the app stores the message you
         write, the type of feedback you selected, your store&rsquo;s domain, and
-        the email address you optionally provide for a reply. This is used only
-        to answer you and to improve the app. Please do not include customer
-        details in the message. It is deleted along with everything else when
-        the app is uninstalled.
+        the email address you optionally provide for a reply. A copy is emailed
+        to our support mailbox so that we see it. This is used only to answer
+        you and to improve the app. Please do not include customer details in
+        the message. The stored copy is deleted along with everything else when
+        the app is uninstalled; email we have already sent to our own mailbox
+        has left the app, so ask us and we will delete that too.
       </p>
 
       <h3>Account and installation data</h3>

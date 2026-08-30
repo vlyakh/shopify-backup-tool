@@ -16,6 +16,7 @@ import {
 import { TitleBar } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
+import { sendMail } from "../services/mail.server";
 
 // Free text from merchants. Capped so a paste of an entire log file can't
 // bloat a row; the cap is generous enough that nobody writing in good faith
@@ -42,7 +43,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return json({ ok: false, error: "Please write a message first." as string | null });
   }
 
-  await prisma.feedback.create({
+  // Write first. This row is the record of truth, so a mail outage costs a
+  // notification and never the merchant's message.
+  const saved = await prisma.feedback.create({
     data: {
       storeId: session.shop,
       kind,
@@ -53,6 +56,33 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     },
   });
 
+  const label =
+    kind === "PROBLEM" ? "Problem" : kind === "REQUEST" ? "Feature request" : "Feedback";
+
+  const delivered = await sendMail({
+    subject: `Reverta — ${label} from ${session.shop}`,
+    replyTo: saved.email,
+    text: [
+      `Store:    ${session.shop}`,
+      `Kind:     ${label}`,
+      `Reply to: ${saved.email ?? "(not given)"}`,
+      `Sent:     ${saved.createdAt.toISOString()}`,
+      `Ref:      ${saved.id}`,
+      "",
+      saved.message,
+    ].join("\n"),
+  });
+
+  if (delivered) {
+    await prisma.feedback.update({
+      where: { id: saved.id },
+      data: { emailedAt: new Date() },
+    });
+  }
+
+  // Deliberately still ok:true when the mail failed. The merchant did their
+  // part and we have their message; telling them it failed would only invite
+  // them to send it twice.
   return json({ ok: true, error: null as string | null });
 };
 

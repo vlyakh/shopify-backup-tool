@@ -292,9 +292,17 @@ model Feedback {
   message   String
   /// Optional reply address. Null when the merchant did not ask for a reply.
   email     String?
+
+  /// When the notification email actually went out. Null means it never did —
+  /// which is how you find the ones to chase after an SMTP outage. The row is
+  /// written before the send, so a mail failure loses a notification and never
+  /// the merchant's message.
+  emailedAt DateTime?
+
   createdAt DateTime     @default(now())
 
   @@index([storeId, createdAt])
+  @@index([emailedAt])
 }
 
 enum FeedbackKind {
