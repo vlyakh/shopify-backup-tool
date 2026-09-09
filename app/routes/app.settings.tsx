@@ -21,8 +21,6 @@ import {
   PREMIUM_PLAN,
   STANDARD_TRIAL_PLAN,
   PREMIUM_TRIAL_PLAN,
-  ALL_PLANS,
-  tierForPlanName,
 } from "../shopify.server";
 import {
   TRIAL_DAYS,
@@ -34,7 +32,11 @@ import {
 import prisma from "../db.server";
 import { storage } from "../services/storage.server";
 import { computeNextRunAt } from "../services/scheduler.server";
-import { planTransition, isTestBillingFor } from "../services/plan.server";
+import {
+  planTransition,
+  isTestBillingFor,
+  resolveActivePlan,
+} from "../services/plan.server";
 
 const PLANS = [
   {
@@ -75,26 +77,30 @@ const PLANS = [
 ];
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session, billing, admin } = await authenticate.admin(request);
-  const isTest = await isTestBillingFor(admin, session.shop);
+  const { session, admin } = await authenticate.admin(request);
 
   // Ask Shopify what the merchant is actually paying for. This is the source
   // of truth - the DB plan is only a cache that we reconcile here (e.g. after
   // the merchant returns from approving a charge, or after a charge lapses).
-  const { appSubscriptions } = await billing.check({
-    plans: [...ALL_PLANS],
-    isTest,
-  });
-
-  const activeName = appSubscriptions[0]?.name;
-  const actualPlan: PlanId = tierForPlanName(activeName);
+  //
+  // A failed read must NOT reconcile: reading "no subscription" from an error
+  // and writing FREE over a live paid plan is the failure that blocked App
+  // Store review. Leave the cache alone and try again on the next load.
+  let actualPlan: PlanId | null = null;
+  try {
+    actualPlan = (await resolveActivePlan(admin)).plan;
+  } catch (error) {
+    console.warn(
+      `[Billing] Could not read active subscriptions for ${session.shop}; leaving the cached plan alone: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 
   let store = await prisma.store.findUnique({ where: { id: session.shop } });
 
   // Reconcile the cached plan with reality. This is the path a lapsed
   // subscription takes — the merchant never clicked anything, so the staged
   // shrink in planTransition is what stops it quietly costing them history.
-  if (store && store.plan !== actualPlan) {
+  if (store && actualPlan !== null && store.plan !== actualPlan) {
     store = await prisma.store.update({
       where: { id: session.shop },
       data: planTransition(store, actualPlan),
@@ -105,7 +111,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Shopify grants trialDays per subscription and never checks whether the
   // shop already had one, so without this a merchant could switch plans (or
   // cancel and resubscribe) for a fresh 14 free days, forever.
-  if (store && actualPlan !== "FREE" && !store.trialUsedAt) {
+  if (store && actualPlan !== null && actualPlan !== "FREE" && !store.trialUsedAt) {
     store = await prisma.store.update({
       where: { id: session.shop },
       data: { trialUsedAt: new Date() },
@@ -116,7 +122,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     store:
       store || {
         id: session.shop,
-        plan: actualPlan,
+        plan: actualPlan ?? "FREE",
         autoBackupEnabled: false,
         autoBackupHour: 3,
         retentionDays: 7,
@@ -200,12 +206,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const plan = formData.get("plan") as string;
 
     if (plan === "FREE") {
-      // Downgrade: cancel any active subscription, then drop the cached plan.
-      const { appSubscriptions } = await billing.check({
-        plans: [...ALL_PLANS],
-        isTest,
-      });
-      for (const sub of appSubscriptions) {
+      // Downgrade: cancel every active subscription, then drop the cached
+      // plan. Everything under currentAppInstallation is ours, so cancel all
+      // of them rather than only the four current plan names — a subscription
+      // created under a retired name would otherwise keep billing forever.
+      // If this read or any cancel throws, the write below never runs: better
+      // to show an error than to move the merchant to Free while Shopify goes
+      // on charging them.
+      const { subscriptions } = await resolveActivePlan(admin);
+      for (const sub of subscriptions) {
         await billing.cancel({
           subscriptionId: sub.id,
           isTest,

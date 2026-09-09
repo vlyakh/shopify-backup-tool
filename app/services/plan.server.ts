@@ -1,8 +1,13 @@
 import {
   RETENTION_GRACE_DAYS,
   planRetentionDays,
+  planRank,
   type PlanId,
 } from "../billing";
+import { tierForPlanName } from "../shopify.server";
+
+/** The shape of `admin` these helpers need — just a GraphQL caller. */
+type AdminLike = { graphql: (query: string) => Promise<Response> };
 
 /**
  * Whether to create TEST charges (Shopify records the subscription but no
@@ -56,7 +61,7 @@ const devStoreCache = new Map<string, { value: boolean; expiresAt: number }>();
  * charges. Falls back to the global setting if the shop query fails.
  */
 export async function isTestBillingFor(
-  admin: { graphql: (query: string) => Promise<Response> },
+  admin: AdminLike,
   shop: string,
 ): Promise<boolean> {
   const override = process.env.SHOPIFY_BILLING_TEST;
@@ -67,8 +72,21 @@ export async function isTestBillingFor(
 
   try {
     const json = await (await admin.graphql(SHOP_PLAN_QUERY)).json();
-    const isDev = json.data?.shop?.plan?.partnerDevelopment === true;
+    // A GraphQL-level error does not throw — it comes back as `errors` with a
+    // null `data`. Reading straight through that would silently decide "not a
+    // dev store" and, worse, cache that decision for six hours.
+    if (json.errors?.length || !json.data?.shop?.plan) {
+      throw new Error(
+        json.errors?.[0]?.message ?? "no shop.plan in the response",
+      );
+    }
+    const isDev = json.data.shop.plan.partnerDevelopment === true;
     devStoreCache.set(shop, { value: isDev, expiresAt: Date.now() + DEV_STORE_TTL_MS });
+    console.log(
+      `[Billing] ${shop}: partnerDevelopment=${isDev}, charges are ${
+        isDev || isTestBilling() ? "TEST" : "real"
+      }`,
+    );
     return isDev || isTestBilling();
   } catch (error) {
     console.warn(
@@ -76,6 +94,78 @@ export async function isTestBillingFor(
     );
     return isTestBilling();
   }
+}
+
+const ACTIVE_SUBSCRIPTIONS_QUERY = `#graphql
+  query ActiveAppSubscriptions {
+    currentAppInstallation {
+      activeSubscriptions {
+        id
+        name
+        status
+        test
+      }
+    }
+  }
+`;
+
+export type ActiveSubscription = {
+  id: string;
+  name: string;
+  status: string;
+  test: boolean;
+};
+
+/**
+ * What Shopify is actually charging this shop for, read from
+ * currentAppInstallation.
+ *
+ * This replaces billing.check() as the source of truth, for one reason: the
+ * library's check() takes an `isTest` argument and DROPS every subscription
+ * whose `test` flag disagrees with it (`isTest || !subscription.test`). We
+ * pass isTest=false for any shop that isn't a Partner dev store, so a
+ * subscription Shopify recorded as a test charge became invisible — the
+ * settings loader read "no active subscription", concluded FREE, and wrote
+ * that over the PREMIUM the app_subscriptions/update webhook had just set. The
+ * App Store reviewer hit exactly that on 2026-09-07: six approved Premium
+ * charges, each wiped back to Free within seconds of returning to the app.
+ *
+ * `test` says whether money moves, which is a question for CREATING a charge
+ * (see isTestBillingFor) and never for reading entitlement. So this ignores it
+ * and reports what is active, however it was billed.
+ *
+ * Highest tier wins when several subscriptions are active at once — during a
+ * plan replacement Shopify can briefly report both.
+ *
+ * Throws if the query fails, so a caller can leave the cached plan alone
+ * rather than downgrade a paying merchant on a transient error.
+ */
+export async function resolveActivePlan(admin: AdminLike): Promise<{
+  plan: PlanId;
+  subscriptions: ActiveSubscription[];
+}> {
+  const json = await (await admin.graphql(ACTIVE_SUBSCRIPTIONS_QUERY)).json();
+  if (json.errors?.length || !json.data?.currentAppInstallation) {
+    throw new Error(
+      json.errors?.[0]?.message ??
+        "no currentAppInstallation in the response",
+    );
+  }
+
+  const subscriptions: ActiveSubscription[] =
+    json.data.currentAppInstallation.activeSubscriptions ?? [];
+
+  let plan: PlanId = "FREE";
+  for (const subscription of subscriptions) {
+    // Defensive: activeSubscriptions should only ever hold ACTIVE ones, but a
+    // PENDING subscription is one the merchant has not approved, and granting
+    // on it would hand out the plan for free.
+    if (subscription.status !== "ACTIVE") continue;
+    const tier = tierForPlanName(subscription.name);
+    if (planRank(tier) > planRank(plan)) plan = tier;
+  }
+
+  return { plan, subscriptions };
 }
 
 if (

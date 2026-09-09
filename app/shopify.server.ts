@@ -27,14 +27,6 @@ export const PREMIUM_PLAN = "Premium";
 export const STANDARD_TRIAL_PLAN = `Standard (${TRIAL_DAYS}-day trial)` as const;
 export const PREMIUM_TRIAL_PLAN = `Premium (${TRIAL_DAYS}-day trial)` as const;
 
-/** Every plan name billing.check must be asked about. */
-export const ALL_PLANS = [
-  STANDARD_PLAN,
-  PREMIUM_PLAN,
-  STANDARD_TRIAL_PLAN,
-  PREMIUM_TRIAL_PLAN,
-] as const;
-
 /** Maps any of the four subscription names back to the tier it grants. */
 export function tierForPlanName(
   name: string | undefined,
