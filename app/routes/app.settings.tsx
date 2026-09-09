@@ -96,6 +96,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }
 
   let store = await prisma.store.findUnique({ where: { id: session.shop } });
+  const backupCount = await prisma.backup.count({
+    where: { storeId: session.shop },
+  });
 
   // Reconcile the cached plan with reality. This is the path a lapsed
   // subscription takes — the merchant never clicked anything, so the staged
@@ -119,6 +122,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }
 
   return json({
+    backupCount,
     store:
       store || {
         id: session.shop,
@@ -279,6 +283,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
     await prisma.backup.deleteMany({ where: { storeId: shop } });
 
+    // A staged retention shrink only ever protected existing backups from the
+    // sweep — enforceRetention deletes Backup rows and their blobs and nothing
+    // else. With none left there is nothing to protect, so apply it now.
+    // Otherwise the merchant is left looking at "your backup history is
+    // scheduled to shrink" about history they just deleted themselves, and the
+    // store sits on a retention window its plan doesn't grant.
+    const store = await prisma.store.findUnique({ where: { id: shop } });
+    if (store?.pendingRetentionDays != null) {
+      await prisma.store.update({
+        where: { id: shop },
+        data: {
+          retentionDays: store.pendingRetentionDays,
+          pendingRetentionDays: null,
+          pendingRetentionAt: null,
+        },
+      });
+    }
+
     return json({ success: true });
   }
 
@@ -286,7 +308,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function Settings() {
-  const { store } = useLoaderData<typeof loader>();
+  const { store, backupCount } = useLoaderData<typeof loader>();
   const submit = useSubmit();
   const navigation = useNavigation();
   const isSaving = navigation.state === "submitting";
@@ -354,12 +376,15 @@ export default function Settings() {
     <Page title="Settings">
       <TitleBar title="Settings" />
       <BlockStack gap="500">
-        {/* A retention shrink is staged — the merchant still has time to act */}
-        {pendingAt && store.pendingRetentionDays !== null && (
+        {/* A retention shrink is staged — the merchant still has time to act.
+            Nothing stored means nothing to lose, so don't warn about it: the
+            shrink stays scheduled, it just stops being news until there is a
+            backup it could delete. No action button either — the plan cards
+            this would send them to are directly below. */}
+        {pendingAt && store.pendingRetentionDays !== null && backupCount > 0 && (
           <Banner
             title="Your backup history is scheduled to shrink"
             tone="warning"
-            action={{ content: "See plans", url: "/app/settings" }}
           >
             <p>
               Backups are still kept for {store.retentionDays} days. On{" "}
