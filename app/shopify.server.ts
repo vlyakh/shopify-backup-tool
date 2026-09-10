@@ -104,6 +104,19 @@ const shopify = shopifyApp({
         update: { lastAuthAt: authAt },
       });
 
+      // Entitlement is Shopify's to state, never ours to remember across an
+      // install boundary. Uninstalling cancels the shop's subscriptions, so a
+      // reinstall starts on Free unless the merchant approves a new charge —
+      // and App Store review 1.2.2 checks exactly that. The uninstall handler
+      // already resets the cached plan, but that webhook can be missed
+      // entirely (Shopify gives up retrying after ~48 h, and the app can be
+      // down for longer), so the authoritative read happens here too, where a
+      // working admin client is guaranteed. Non-reinstall re-auths reconcile
+      // for free: an active paid plan reads back as itself. A failed read
+      // leaves the cache alone rather than downgrade a paying merchant.
+      const { syncStorePlan } = await import("./services/plan.server");
+      const { plan } = await syncStorePlan(admin, session.shop, { force: true });
+
       if (store.uninstalledAt) {
         // Reinstall after an uninstall. The surviving backups and ledger
         // predate the gap — edits made while uninstalled were never tracked —
@@ -159,7 +172,7 @@ const shopify = shopifyApp({
             } else {
               const { runBackup } = await import("./services/backup.server");
               try {
-                await runBackup(admin, session.shop, "MANUAL", store.plan);
+                await runBackup(admin, session.shop, "MANUAL", plan);
               } catch (err) {
                 // Still re-enable tracking below: the next re-auth would turn
                 // it on regardless, so staying dark only loses changes.
@@ -217,7 +230,7 @@ const shopify = shopifyApp({
         });
         if (backupCount === 0) {
           const { runBackup } = await import("./services/backup.server");
-          runBackup(admin, session.shop, "MANUAL", store.plan).catch((err) => {
+          runBackup(admin, session.shop, "MANUAL", plan).catch((err) => {
             console.error(
               `[afterAuth] initial backup failed for ${session.shop}:`,
               err,

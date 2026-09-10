@@ -36,6 +36,7 @@ import {
   planTransition,
   isTestBillingFor,
   resolveActivePlan,
+  syncStorePlan,
 } from "../services/plan.server";
 
 const PLANS = [
@@ -79,62 +80,17 @@ const PLANS = [
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session, admin } = await authenticate.admin(request);
 
-  // Ask Shopify what the merchant is actually paying for. This is the source
-  // of truth - the DB plan is only a cache that we reconcile here (e.g. after
-  // the merchant returns from approving a charge, or after a charge lapses).
-  //
-  // A failed read must NOT reconcile: reading "no subscription" from an error
-  // and writing FREE over a live paid plan is the failure that blocked App
-  // Store review. Leave the cache alone and try again on the next load.
-  let actualPlan: PlanId | null = null;
-  try {
-    actualPlan = (await resolveActivePlan(admin)).plan;
-  } catch (error) {
-    console.warn(
-      `[Billing] Could not read active subscriptions for ${session.shop}; leaving the cached plan alone: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-
-  let store = await prisma.store.findUnique({ where: { id: session.shop } });
+  // Ask Shopify what the merchant is actually paying for and reconcile the
+  // cached plan before the cards below are drawn — the DB plan is only a
+  // cache. Forced past the sync TTL on purpose: this is the page Shopify
+  // returns the merchant to after they approve or decline a charge, so it has
+  // to reflect that decision on the very next render.
+  const store = await syncStorePlan(admin, session.shop, { force: true });
   const backupCount = await prisma.backup.count({
     where: { storeId: session.shop },
   });
 
-  // Reconcile the cached plan with reality. This is the path a lapsed
-  // subscription takes — the merchant never clicked anything, so the staged
-  // shrink in planTransition is what stops it quietly costing them history.
-  if (store && actualPlan !== null && store.plan !== actualPlan) {
-    store = await prisma.store.update({
-      where: { id: session.shop },
-      data: planTransition(store, actualPlan),
-    });
-  }
-
-  // Burn the trial the first time this shop is seen on a paid subscription.
-  // Shopify grants trialDays per subscription and never checks whether the
-  // shop already had one, so without this a merchant could switch plans (or
-  // cancel and resubscribe) for a fresh 14 free days, forever.
-  if (store && actualPlan !== null && actualPlan !== "FREE" && !store.trialUsedAt) {
-    store = await prisma.store.update({
-      where: { id: session.shop },
-      data: { trialUsedAt: new Date() },
-    });
-  }
-
-  return json({
-    backupCount,
-    store:
-      store || {
-        id: session.shop,
-        plan: actualPlan ?? "FREE",
-        autoBackupEnabled: false,
-        autoBackupHour: 3,
-        retentionDays: 7,
-        pendingRetentionDays: null,
-        pendingRetentionAt: null,
-        trialUsedAt: null,
-      },
-  });
+  return json({ backupCount, store });
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -421,10 +377,17 @@ export default function Settings() {
                       onClick={() => handleSubscribe(plan.id)}
                       loading={isSaving}
                     >
+                      {/* Only promise the trial to a shop that can still
+                          have one. The action picks the no-trial plan variant
+                          once trialUsedAt is set, so on any later visit —
+                          including after an uninstall and reinstall, which
+                          drops the shop back to Free but deliberately keeps
+                          trialUsedAt — this button would otherwise offer a
+                          free trial and charge immediately instead. */}
                       {planRank(plan.id as PlanId) <
                       planRank(store.plan as PlanId)
                         ? "Downgrade"
-                        : store.plan === "FREE"
+                        : store.plan === "FREE" && !store.trialUsedAt
                           ? "Start free trial"
                           : "Upgrade"}
                     </Button>

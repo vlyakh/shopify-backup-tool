@@ -1,3 +1,5 @@
+import type { Prisma } from "@prisma/client";
+import prisma from "../db.server";
 import {
   RETENTION_GRACE_DAYS,
   planRetentionDays,
@@ -222,4 +224,81 @@ export function planTransition(
       Date.now() + RETENTION_GRACE_DAYS * 24 * 60 * 60 * 1000,
     ),
   };
+}
+
+// How long a UI page may reuse a plan already reconciled for this shop before
+// asking Shopify again. Bounds the staleness of every "your plan" surface
+// without making a GraphQL round trip out of, say, the dashboard's 2-second
+// poll while a backup runs. Pages the merchant reaches straight from a billing
+// decision pass `force` instead and always re-read.
+const PLAN_SYNC_TTL_MS = 60 * 1000;
+const lastPlanSync = new Map<string, number>();
+
+/**
+ * Reconcile the cached Store.plan with what Shopify is actually charging for,
+ * and return the up-to-date row (creating it if this shop has none yet).
+ *
+ * Store.plan is only a cache. The scheduler, the change-tracking gate and
+ * every page that renders "your plan" read it rather than pay for a GraphQL
+ * round trip — so whatever is wrong with the cache is wrong with the app.
+ *
+ * Reconciling it in exactly one place (the settings loader) is what failed App
+ * Store review 1.2.2: uninstalling cancels the shop's subscriptions, but
+ * nothing cleared the cached plan, so a reinstalled shop came back with
+ * PREMIUM still stored. The dashboard announced "Plan: Premium", Settings drew
+ * the Premium card as a disabled "Current Plan" — leaving the merchant no way
+ * to request approval for the charge again — and change tracking stayed
+ * unlocked, all without a subscription behind any of it.
+ *
+ * A failed read never reconciles: reading "no subscription" out of a transient
+ * error and writing FREE over a live paid plan is the separate failure that
+ * blocked review 1.2.3. Leave the cache alone and try again on the next call.
+ */
+export async function syncStorePlan(
+  admin: AdminLike,
+  shop: string,
+  { force = false }: { force?: boolean } = {},
+) {
+  let store = await prisma.store.upsert({
+    where: { id: shop },
+    create: { id: shop },
+    update: {},
+  });
+
+  const syncedAt = lastPlanSync.get(shop);
+  if (!force && syncedAt && Date.now() - syncedAt < PLAN_SYNC_TTL_MS) {
+    return store;
+  }
+
+  let actualPlan: PlanId;
+  try {
+    actualPlan = (await resolveActivePlan(admin)).plan;
+  } catch (error) {
+    console.warn(
+      `[Billing] Could not read active subscriptions for ${shop}; leaving the cached plan alone: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return store;
+  }
+  lastPlanSync.set(shop, Date.now());
+
+  const data: Prisma.StoreUpdateInput = {};
+
+  // Burn the trial the first time this shop is seen on a paid subscription.
+  // Shopify grants trialDays per subscription and never checks whether the
+  // shop already had one, so without this a merchant could switch plans — or
+  // uninstall, reinstall and resubscribe — for a fresh free trial, forever.
+  if (actualPlan !== "FREE" && !store.trialUsedAt) data.trialUsedAt = new Date();
+
+  // This is the path a lapsed subscription takes — the merchant never clicked
+  // anything, so the staged shrink in planTransition is what stops the
+  // reconciliation quietly costing them their backup history.
+  if (store.plan !== actualPlan) {
+    Object.assign(data, planTransition(store, actualPlan));
+    console.log(`[Billing] ${shop}: plan ${store.plan} -> ${actualPlan}`);
+  }
+
+  if (Object.keys(data).length > 0) {
+    store = await prisma.store.update({ where: { id: shop }, data });
+  }
+  return store;
 }

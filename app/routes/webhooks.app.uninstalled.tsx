@@ -1,6 +1,7 @@
 import type { ActionFunctionArgs } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
+import { planTransition } from "../services/plan.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const triggeredAtHeader = request.headers.get("X-Shopify-Triggered-At");
@@ -26,7 +27,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     : new Date(triggeredAtMs);
   const store = await db.store.findUnique({
     where: { id: shop },
-    select: { lastAuthAt: true },
+    select: { lastAuthAt: true, plan: true, retentionDays: true },
   });
   if (store?.lastAuthAt && store.lastAuthAt > triggeredAt) {
     console.log(
@@ -50,12 +51,23 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // the ledger wipe/30-day purge on a live install. The destructive deletes
   // below only run once this stamp lands, so a racing reinstall also keeps
   // its fresh session and schedule.
+  //
+  // The plan drops to FREE here because Shopify cancels every app subscription
+  // on uninstall — the shop is provably not paying for anything the moment
+  // this event is genuine. Leaving the cached plan on its old paid value is
+  // what failed App Store review 1.2.2: a reinstalled shop came back showing
+  // Premium as its current plan, which also left the Premium card drawn as a
+  // disabled "Current Plan" with no way to request approval for the charge
+  // again. Routed through planTransition so the retention shrink is staged
+  // behind the grace period rather than arming the sweep to delete the
+  // merchant's history within the hour — they may well reinstall.
   const stamped = await db.store.updateMany({
     where: {
       id: shop,
       OR: [{ lastAuthAt: null }, { lastAuthAt: { lte: triggeredAt } }],
     },
     data: {
+      ...planTransition(store, "FREE"),
       webhooksEnabled: false,
       autoBackupEnabled: false,
       uninstalledAt: new Date(),

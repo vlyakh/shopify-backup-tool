@@ -18,15 +18,19 @@ import { TitleBar } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { NOISE_KEYS, FIELD_LABELS } from "../services/noise-fields";
+import { syncStorePlan } from "../services/plan.server";
 
 const PAGE_SIZE = 50;
 
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session, admin } = await authenticate.admin(request);
   const shop = session.shop;
 
-  const store = await prisma.store.findUnique({ where: { id: shop } });
+  // Reconcile the cached plan before gating on it: this page IS the Premium
+  // entitlement, so serving it off a plan cached from before an uninstall
+  // hands the ledger to a shop with no subscription behind it.
+  const store = await syncStorePlan(admin, shop);
   // Gate on the server, not just in the component below. The loader payload is
   // serialised into the HTML and visible in the network tab, so querying the
   // ledger and then hiding it behind an upsell banner handed the Premium data

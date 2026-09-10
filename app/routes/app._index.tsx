@@ -33,21 +33,22 @@ import prisma from "../db.server";
 import { FIELD_LABELS } from "../services/noise-fields";
 import { startBackupIfIdle } from "../services/backup.server";
 import { computeNextRunAt } from "../services/scheduler.server";
+import { syncStorePlan } from "../services/plan.server";
 import type { loader as changedProductsLoader } from "./api.changed-products";
 import type { loader as deletedProductsLoader } from "./api.deleted-products";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session, admin } = await authenticate.admin(request);
   const shop = session.shop;
 
-  // Ensure store record exists
-  await prisma.store.upsert({
-    where: { id: shop },
-    create: { id: shop },
-    update: {},
-  });
-
-  const store = await prisma.store.findUnique({ where: { id: shop } });
+  // Ensures the store record exists AND reconciles its cached plan with what
+  // Shopify is actually charging for, because this page announces the plan and
+  // sizes what a backup covers by it. A cache nothing here refreshed is why a
+  // reinstalled shop greeted the App Store reviewer with "Plan: Premium"
+  // against a subscription Shopify had already cancelled. Rate-limited to one
+  // read a minute per shop, so the 2-second poll that runs while a backup is
+  // in progress doesn't turn into a GraphQL call every 2 seconds.
+  const store = await syncStorePlan(admin, shop);
 
   const backups = await prisma.backup.findMany({
     where: { storeId: shop },
